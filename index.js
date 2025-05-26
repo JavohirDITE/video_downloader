@@ -205,8 +205,12 @@ bot.on("callback_query", async (ctx) => {
   const userId = ctx.from.id
 
   try {
+    // Всегда отвечаем на callback query, чтобы убрать "загрузку"
+    await ctx.answerCbQuery()
+
     if (data === "download_video") {
-      await ctx.editMessageText(
+      // Отправляем новое сообщение вместо редактирования
+      await ctx.reply(
         "📥 Выберите качество для скачивания видео:\n\n" +
           "🔥 1080p - Лучшее качество (больше размер)\n" +
           "⭐ 720p - Рекомендуемое качество\n" +
@@ -215,14 +219,14 @@ bot.on("callback_query", async (ctx) => {
         createQualityMenu("video"),
       )
     } else if (data === "extract_audio") {
-      await ctx.editMessageText(
+      await ctx.reply(
         "🎵 Отправьте ссылку на видео для извлечения аудио:\n\n" +
           "Аудио будет сохранено в формате MP3 (192 kbps) с правильным названием.",
         Markup.inlineKeyboard([[Markup.button.callback("⬅️ Назад", "back_to_main")]]),
       )
       userSessions.set(userId, { action: "extract_audio" })
     } else if (data === "video_info") {
-      await ctx.editMessageText(
+      await ctx.reply(
         "ℹ️ Отправьте ссылку на видео для получения информации:\n\n" +
           "Вы увидите название, автора, длительность и платформу.",
         Markup.inlineKeyboard([[Markup.button.callback("⬅️ Назад", "back_to_main")]]),
@@ -254,16 +258,13 @@ bot.on("callback_query", async (ctx) => {
 🌐 Поддерживаемые сайты:
 YouTube, TikTok, Instagram, Twitter, Facebook, VK и многие другие!`
 
-      await ctx.editMessageText(
-        helpMessage,
-        Markup.inlineKeyboard([[Markup.button.callback("⬅️ Назад", "back_to_main")]]),
-      )
+      await ctx.reply(helpMessage, Markup.inlineKeyboard([[Markup.button.callback("⬅️ Назад", "back_to_main")]]))
     } else if (data === "back_to_main") {
-      await ctx.editMessageText("👇 Выберите действие или отправьте ссылку на видео:", createMainMenu())
+      await ctx.reply("👇 Выберите действие или отправьте ссылку на видео:", createMainMenu())
       userSessions.delete(userId)
     } else if (data.startsWith("video_")) {
       const quality = data.split("_")[1]
-      await ctx.editMessageText(
+      await ctx.reply(
         `📥 Выбрано качество: ${quality}p\n\n` + "Теперь отправьте ссылку на видео для скачивания:",
         Markup.inlineKeyboard([
           [Markup.button.callback("🔄 Изменить качество", "download_video")],
@@ -272,11 +273,14 @@ YouTube, TikTok, Instagram, Twitter, Facebook, VK и многие другие!`
       )
       userSessions.set(userId, { action: "download_video", quality })
     }
-
-    await ctx.answerCbQuery()
   } catch (error) {
     console.error("Ошибка обработки callback:", error)
-    await ctx.answerCbQuery("Произошла ошибка")
+    // Если произошла ошибка, отправляем новое сообщение
+    try {
+      await ctx.reply("❌ Произошла ошибка. Попробуйте еще раз:", createMainMenu())
+    } catch (replyError) {
+      console.error("Не удалось отправить сообщение об ошибке:", replyError)
+    }
   }
 })
 
@@ -366,7 +370,7 @@ async function handleVideoDownload(ctx, url, quality) {
     if (fileSizeMB > 50) {
       cleanupFiles(actualVideoPath)
       try {
-        return await ctx.editMessageText(
+        return await ctx.reply(
           "❌ Файл слишком большой (более 50 МБ).\n" +
             "Попробуйте выбрать меньшее качество или используйте извлечение аудио.",
           createMainMenu(),
@@ -423,11 +427,8 @@ async function handleVideoDownload(ctx, url, quality) {
       errorMessage = "❌ Данный сайт не поддерживается."
     }
 
-    try {
-      await ctx.editMessageText(errorMessage, createMainMenu())
-    } catch (editError) {
-      ctx.reply(errorMessage, createMainMenu())
-    }
+    // Всегда отправляем новое сообщение вместо редактирования
+    ctx.reply(errorMessage, createMainMenu())
   }
 }
 
@@ -499,7 +500,7 @@ async function handleAudioExtraction(ctx, url) {
       cleanupFiles(actualVideoPath)
       cleanupFiles(audioPath)
       try {
-        return await ctx.editMessageText(
+        return await ctx.reply(
           "❌ Аудио файл слишком большой (более 50 МБ).\nПопробуйте видео покороче.",
           createMainMenu(),
         )
@@ -552,11 +553,8 @@ async function handleAudioExtraction(ctx, url) {
       errorMessage = "❌ Видео недоступно."
     }
 
-    try {
-      await ctx.editMessageText(errorMessage, createMainMenu())
-    } catch (editError) {
-      ctx.reply(errorMessage, createMainMenu())
-    }
+    // Всегда отправляем новое сообщение вместо редактирования
+    ctx.reply(errorMessage, createMainMenu())
   }
 }
 
@@ -597,11 +595,8 @@ async function handleVideoInfo(ctx, url) {
     )
   } catch (error) {
     console.error("Ошибка при получении информации:", error)
-    try {
-      await ctx.editMessageText("❌ Не удалось получить информацию о видео.", createMainMenu())
-    } catch (editError) {
-      ctx.reply("❌ Не удалось получить информацию о видео.", createMainMenu())
-    }
+    // Всегда отправляем новое сообщение вместо редактирования
+    ctx.reply("❌ Не удалось получить информацию о видео.", createMainMenu())
   }
 }
 
