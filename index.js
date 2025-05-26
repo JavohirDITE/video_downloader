@@ -3,6 +3,7 @@ const { exec } = require("child_process")
 const fs = require("fs")
 const path = require("path")
 const util = require("util")
+const express = require("express")
 
 // Преобразуем exec в промис для удобства использования
 const execPromise = util.promisify(exec)
@@ -19,6 +20,10 @@ console.log("✅ Токен бота найден, длина:", BOT_TOKEN.lengt
 
 // Создаем экземпляр бота с токеном из переменных окружения
 const bot = new Telegraf(BOT_TOKEN)
+
+// Создаем Express приложение для webhook
+const app = express()
+const PORT = process.env.PORT || 3000
 
 // Создаем папки для временных файлов, если их нет
 const tempDir = path.join(__dirname, "temp")
@@ -338,32 +343,9 @@ bot.on("text", (ctx) => {
 // Обработка ошибок
 bot.catch((err, ctx) => {
   console.error("Ошибка бота:", err)
-  ctx.reply("❌ Произошла внутренняя ошибка. Попробуйте позже.")
-})
-
-// Запуск бота
-console.log("🚀 Запуск Telegram бота...")
-
-bot
-  .launch()
-  .then(() => {
-    console.log("✅ Бот успешно запущен!")
-    console.log("🔗 Имя бота:", bot.botInfo?.username || "неизвестно")
-  })
-  .catch((error) => {
-    console.error("❌ Ошибка при запуске бота:", error)
-    process.exit(1)
-  })
-
-// Graceful shutdown
-process.once("SIGINT", () => {
-  console.log("🛑 Получен сигнал SIGINT, завершаем работу бота...")
-  bot.stop("SIGINT")
-})
-
-process.once("SIGTERM", () => {
-  console.log("🛑 Получен сигнал SIGTERM, завершаем работу бота...")
-  bot.stop("SIGTERM")
+  if (ctx) {
+    ctx.reply("❌ Произошла внутренняя ошибка. Попробуйте позже.")
+  }
 })
 
 // Очистка временных файлов при запуске
@@ -385,3 +367,64 @@ cleanupTempDir()
 
 // Периодическая очистка временных файлов (каждые 30 минут)
 setInterval(cleanupTempDir, 30 * 60 * 1000)
+
+// Настройка webhook для Railway
+app.use(express.json())
+
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.send('🤖 Telegram Video Downloader Bot is running!')
+})
+
+// Webhook endpoint
+app.post(`/webhook/${BOT_TOKEN}`, (req, res) => {
+  bot.handleUpdate(req.body)
+  res.sendStatus(200)
+})
+
+// Запуск сервера
+app.listen(PORT, async () => {
+  console.log(`🚀 Сервер запущен на порту ${PORT}`)
+  
+  try {
+    // Устанавливаем webhook
+    const webhookUrl = process.env.RAILWAY_STATIC_URL 
+      ? `https://${process.env.RAILWAY_STATIC_URL}/webhook/${BOT_TOKEN}`
+      : `http://localhost:${PORT}/webhook/${BOT_TOKEN}`
+    
+    console.log(`🔗 Устанавливаем webhook: ${webhookUrl}`)
+    await bot.telegram.setWebhook(webhookUrl)
+    console.log("✅ Webhook установлен успешно!")
+    
+    // Получаем информацию о боте
+    const botInfo = await bot.telegram.getMe()
+    console.log(`✅ Бот @${botInfo.username} успешно запущен!`)
+    
+  } catch (error) {
+    console.error("❌ Ошибка при установке webhook:", error)
+    
+    // Если webhook не работает, используем polling
+    console.log("🔄 Переключаемся на polling...")
+    try {
+      await bot.telegram.deleteWebhook()
+      await bot.launch()
+      console.log("✅ Бот запущен в режиме polling!")
+    } catch (pollingError) {
+      console.error("❌ Ошибка при запуске polling:", pollingError)
+      process.exit(1)
+    }
+  }
+})
+
+// Graceful shutdown
+process.once("SIGINT", () => {
+  console.log("🛑 Получен сигнал SIGINT, завершаем работу бота...")
+  bot.stop("SIGINT")
+  process.exit(0)
+})
+
+process.once("SIGTERM", () => {
+  console.log("🛑 Получен сигнал SIGTERM, завершаем работу бота...")
+  bot.stop("SIGTERM")
+  process.exit(0)
+})
