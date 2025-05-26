@@ -4,6 +4,9 @@ const fs = require("fs")
 const path = require("path")
 const util = require("util")
 const express = require("express")
+const axios = require("axios")
+const FormData = require("form-data")
+const crypto = require("crypto")
 
 // Преобразуем exec в промис для удобства использования
 const execPromise = util.promisify(exec)
@@ -16,7 +19,22 @@ if (!BOT_TOKEN) {
   process.exit(1)
 }
 
+// ACRCloud настройки
+const ACRCLOUD_CONFIG = {
+  host: process.env.ACRCLOUD_HOST || "identify-ap-southeast-1.acrcloud.com",
+  access_key: process.env.ACRCLOUD_ACCESS_KEY,
+  access_secret: process.env.ACRCLOUD_ACCESS_SECRET,
+  timeout: 10000,
+}
+
+// Проверяем настройки ACRCloud
+if (!ACRCLOUD_CONFIG.access_key || !ACRCLOUD_CONFIG.access_secret) {
+  console.warn("⚠️ ПРЕДУПРЕЖДЕНИЕ: ACRCloud API ключи не настроены. Функция распознавания музыки будет недоступна.")
+  console.warn("Установите ACRCLOUD_ACCESS_KEY и ACRCLOUD_ACCESS_SECRET для включения функции.")
+}
+
 console.log("✅ Токен бота найден, длина:", BOT_TOKEN.length)
+console.log("🎵 ACRCloud настройки:", ACRCLOUD_CONFIG.access_key ? "✅ Настроены" : "❌ Не настроены")
 
 // Создаем экземпляр бота с токеном из переменных окружения
 const bot = new Telegraf(BOT_TOKEN)
@@ -38,6 +56,7 @@ const userSessions = new Map()
 const MAX_VIDEO_SIZE_MB = 45 // Оставляем запас для Telegram лимита в 50 МБ
 const MAX_DOCUMENT_SIZE_MB = 2000 // 2 ГБ лимит Telegram
 const TARGET_SIZE_MB = 25 // Целевой размер для комфортной отправки
+const MAX_AUDIO_DURATION_FOR_RECOGNITION = 60 // Максимальная длительность аудио для распознавания (секунды)
 
 // Функция для очистки временных файлов
 function cleanupFiles(filePath) {
@@ -83,6 +102,74 @@ function detectPlatform(url) {
     return "vk"
   } else {
     return "other"
+  }
+}
+
+// Функция для создания подписи ACRCloud
+function buildStringToSign(method, uri, accessKey, dataType, signatureVersion, timestamp) {
+  return [method, uri, accessKey, dataType, signatureVersion, timestamp].join("\n")
+}
+
+// Функция для создания подписи
+function sign(signString, accessSecret) {
+  return crypto.createHmac("sha1", accessSecret).update(Buffer.from(signString, "utf-8")).digest().toString("base64")
+}
+
+// Функция распознавания музыки через ACRCloud API
+async function recognizeMusic(audioBuffer) {
+  if (!ACRCLOUD_CONFIG.access_key || !ACRCLOUD_CONFIG.access_secret) {
+    throw new Error("ACRCloud API ключи не настроены")
+  }
+
+  const method = "POST"
+  const uri = "/v1/identify"
+  const dataType = "audio"
+  const signatureVersion = "1"
+  const timestamp = new Date().getTime()
+
+  const stringToSign = buildStringToSign(method, uri, ACRCLOUD_CONFIG.access_key, dataType, signatureVersion, timestamp)
+  const signature = sign(stringToSign, ACRCLOUD_CONFIG.access_secret)
+
+  const formData = new FormData()
+  formData.append("sample", audioBuffer, {
+    filename: "sample.wav",
+    contentType: "audio/wav",
+  })
+  formData.append("access_key", ACRCLOUD_CONFIG.access_key)
+  formData.append("data_type", dataType)
+  formData.append("signature_version", signatureVersion)
+  formData.append("signature", signature)
+  formData.append("sample_bytes", audioBuffer.length.toString())
+  formData.append("timestamp", timestamp.toString())
+
+  try {
+    const response = await axios.post(`https://${ACRCLOUD_CONFIG.host}${uri}`, formData, {
+      headers: {
+        ...formData.getHeaders(),
+      },
+      timeout: ACRCLOUD_CONFIG.timeout,
+    })
+
+    return response.data
+  } catch (error) {
+    console.error("Ошибка ACRCloud API:", error)
+    throw error
+  }
+}
+
+// Функция для конвертации аудио в нужный формат для распознавания
+async function convertAudioForRecognition(inputPath, outputPath) {
+  // Конвертируем в WAV 16kHz mono для лучшего распознавания
+  const command = `ffmpeg -i "${inputPath}" -ar 16000 -ac 1 -f wav "${outputPath}" -y`
+  console.log(`Конвертация аудио для распознавания: ${command}`)
+
+  try {
+    const { stdout, stderr } = await execPromise(command, { timeout: 60000 })
+    console.log("Конвертация завершена успешно")
+    return true
+  } catch (error) {
+    console.error("Ошибка конвертации аудио:", error)
+    throw error
   }
 }
 
@@ -382,8 +469,8 @@ async function extractAudio(videoPath, audioPath) {
 function createMainMenu() {
   return Markup.keyboard([
     ["📥 Скачать видео", "🎵 Извлечь аудио"],
-    ["ℹ️ Информация о видео", "❓ Помощь"],
-    ["⚙️ Настройки качества"],
+    ["🎶 Распознать музыку", "ℹ️ Информация о видео"],
+    ["⚙️ Настройки качества", "❓ Помощь"],
   ]).resize()
 }
 
@@ -398,14 +485,17 @@ function createQualityMenu() {
 
 // Команда /start - приветствие с меню
 bot.start((ctx) => {
-  const welcomeMessage = `
-🎬 Добро пожаловать в оптимизированный бот для скачивания видео!
+  const musicFeature = ACRCLOUD_CONFIG.access_key ? "• 🎶 Распознавание музыки как в Shazam" : ""
 
-🌟 Новые возможности:
+  const welcomeMessage = `
+🎬 Добро пожаловать в многофункциональный бот!
+
+🌟 Возможности:
 • Автоматический выбор оптимального качества
 • Контроль размера файлов
 • Быстрая обработка
 • Поддержка больших файлов
+${musicFeature}
 
 🌐 Поддерживаемые платформы:
 YouTube, TikTok, Instagram, Twitter, Facebook, VK и 1000+ других!
@@ -417,6 +507,14 @@ YouTube, TikTok, Instagram, Twitter, Facebook, VK и 1000+ других!
 
 // Команда помощи
 bot.command("help", (ctx) => {
+  const musicHelp = ACRCLOUD_CONFIG.access_key
+    ? `
+🎶 Распознавание музыки:
+• Нажмите "🎶 Распознать музыку"
+• Отправьте голосовое сообщение или аудиофайл
+• Получите название трека и исполнителя`
+    : ""
+
   const helpMessage = `
 📖 Подробная справка:
 
@@ -429,6 +527,7 @@ bot.command("help", (ctx) => {
 • Нажмите "🎵 Извлечь аудио"
 • Отправьте ссылку на видео
 • Получите MP3 файл (128 kbps)
+${musicHelp}
 
 ⚙️ Настройки качества:
 • ⭐ 720p - Рекомендуемое (оптимально)
@@ -441,11 +540,50 @@ bot.command("help", (ctx) => {
 • Видео до 45 МБ отправляются как видео
 • Больше 45 МБ - как документы
 • Максимум 2 ГБ (лимит Telegram)
+• Распознавание музыки: до 60 секунд
 
 🌐 Поддерживаемые сайты:
 YouTube, TikTok, Instagram, Twitter, Facebook, VK и многие другие!`
 
   ctx.reply(helpMessage, createMainMenu())
+})
+
+// Обработка голосовых сообщений
+bot.on("voice", async (ctx) => {
+  if (!ACRCLOUD_CONFIG.access_key) {
+    return ctx.reply("❌ Функция распознавания музыки не настроена.", createMainMenu())
+  }
+
+  const session = userSessions.get(ctx.from.id) || {}
+
+  if (session.action === "recognize_music") {
+    await handleMusicRecognition(ctx, "voice")
+  } else {
+    ctx.reply(
+      "🎶 Я получил голосовое сообщение!\n\n" +
+        'Если хотите распознать музыку, нажмите "🎶 Распознать музыку" и отправьте голосовое сообщение снова.',
+      createMainMenu(),
+    )
+  }
+})
+
+// Обработка аудиофайлов
+bot.on("audio", async (ctx) => {
+  if (!ACRCLOUD_CONFIG.access_key) {
+    return ctx.reply("❌ Функция распознавания музыки не настроен��.", createMainMenu())
+  }
+
+  const session = userSessions.get(ctx.from.id) || {}
+
+  if (session.action === "recognize_music") {
+    await handleMusicRecognition(ctx, "audio")
+  } else {
+    ctx.reply(
+      "🎶 Я получил аудиофайл!\n\n" +
+        'Если хотите распознать музыку, нажмите "🎶 Распознать музыку" и отправьте аудиофайл снова.',
+      createMainMenu(),
+    )
+  }
 })
 
 // Обработка текстовых сообщений (меню)
@@ -478,6 +616,23 @@ bot.on("text", async (ctx) => {
     return
   }
 
+  if (text === "🎶 Распознать музыку") {
+    if (!ACRCLOUD_CONFIG.access_key) {
+      return ctx.reply("❌ Функция распознавания музыки не настроена.", createMainMenu())
+    }
+
+    ctx.reply(
+      "🎶 Режим распознавания музыки активирован!\n\n" +
+        "📱 Отправьте голосовое сообщение или аудиофайл\n" +
+        "🎵 Я определю название трека и исполнителя\n" +
+        "⏱ Максимальная длительность: 60 секунд\n\n" +
+        "💡 Для лучшего результата используйте качественную запись без шумов.",
+      createMainMenu(),
+    )
+    userSessions.set(userId, { ...session, action: "recognize_music" })
+    return
+  }
+
   if (text === "ℹ️ Информация о видео") {
     ctx.reply(
       "ℹ️ Режим получения информации активирован!\n\n" + "Отправьте ссылку на видео для получения подробной информации.",
@@ -488,6 +643,14 @@ bot.on("text", async (ctx) => {
   }
 
   if (text === "❓ Помощь") {
+    const musicHelp = ACRCLOUD_CONFIG.access_key
+      ? `
+🎶 <b>Распознавание музыки:</b>
+• Нажмите "🎶 Распознать музыку"
+• Отправьте голосовое сообщение или аудиофайл
+• Получите название и исполнителя`
+      : ""
+
     return ctx.replyWithHTML(
       `
 📖 <b>Подробная справка:</b>
@@ -500,6 +663,7 @@ bot.on("text", async (ctx) => {
 🎵 <b>Извлечение аудио:</b>
 • Нажмите "🎵 Извлечь аудио"
 • Отправьте ссылку на видео
+${musicHelp}
 
 ⚙️ <b>Качество видео:</b>
 • 🚀 Авто - Автоматический выбор (рекомендуется)
@@ -590,6 +754,200 @@ YouTube, TikTok, Instagram, Twitter, Facebook, VK и 1000+ других!`,
     ctx.reply("💡 Я вижу ссылку на видео! Выберите действие в меню:", createMainMenu())
   }
 })
+
+// Функция обработки распознавания музыки
+async function handleMusicRecognition(ctx, type) {
+  let processingMessage
+  try {
+    processingMessage = await ctx.reply("🎶 Анализирую аудио... Это может занять до 30 секунд.")
+  } catch (error) {
+    console.error("Ошибка при отправке сообщения:", error)
+    return
+  }
+
+  try {
+    let fileId, duration
+    if (type === "voice") {
+      fileId = ctx.message.voice.file_id
+      duration = ctx.message.voice.duration
+    } else if (type === "audio") {
+      fileId = ctx.message.audio.file_id
+      duration = ctx.message.audio.duration
+    }
+
+    // Проверяем длительность
+    if (duration > MAX_AUDIO_DURATION_FOR_RECOGNITION) {
+      return ctx.reply(
+        `❌ Аудио слишком длинное: ${duration} секунд\n` +
+          `Максимальная длительность: ${MAX_AUDIO_DURATION_FOR_RECOGNITION} секунд\n\n` +
+          `Отправьте более короткую запись.`,
+        createMainMenu(),
+      )
+    }
+
+    // Получаем файл от Telegram
+    const file = await ctx.telegram.getFile(fileId)
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
+
+    // Скачиваем файл
+    const timestamp = Date.now()
+    const originalPath = path.join(tempDir, `original_${timestamp}.ogg`)
+    const convertedPath = path.join(tempDir, `converted_${timestamp}.wav`)
+
+    console.log(`Скачиваем аудио файл: ${fileUrl}`)
+
+    const response = await axios({
+      method: "GET",
+      url: fileUrl,
+      responseType: "stream",
+    })
+
+    const writer = fs.createWriteStream(originalPath)
+    response.data.pipe(writer)
+
+    await new Promise((resolve, reject) => {
+      writer.on("finish", resolve)
+      writer.on("error", reject)
+    })
+
+    // Обновляем сообщение
+    try {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        processingMessage.message_id,
+        null,
+        "🎶 Конвертирую аудио для распознавания...",
+      )
+    } catch (editError) {
+      console.log("Не удалось отредактировать сообщение")
+    }
+
+    // Конвертируем аудио для распознавания
+    await convertAudioForRecognition(originalPath, convertedPath)
+
+    // Читаем конвертированный файл
+    const audioBuffer = fs.readFileSync(convertedPath)
+
+    // Обновляем сообщение
+    try {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        processingMessage.message_id,
+        null,
+        "🎶 Распознаю музыку через ACRCloud...",
+      )
+    } catch (editError) {
+      console.log("Не удалось отредактировать сообщение")
+    }
+
+    // Распознаем музыку
+    const result = await recognizeMusic(audioBuffer)
+
+    console.log("Результат распознавания:", JSON.stringify(result, null, 2))
+
+    // Очищаем временные файлы
+    cleanupFiles(originalPath)
+    cleanupFiles(convertedPath)
+
+    // Обрабатываем результат
+    if (result.status && result.status.code === 0 && result.metadata && result.metadata.music) {
+      const music = result.metadata.music[0]
+      const title = music.title || "Неизвестно"
+      const artists = music.artists ? music.artists.map((a) => a.name).join(", ") : "Неизвестно"
+      const album = music.album ? music.album.name : "Неизвестно"
+      const releaseDate = music.release_date || "Неизвестно"
+      const duration = music.duration_ms ? Math.round(music.duration_ms / 1000) : "Неизвестно"
+      const score = result.status.score || 0
+
+      // Форматируем длительность
+      const durationFormatted =
+        duration !== "Неизвестно"
+          ? `${Math.floor(duration / 60)}:${(duration % 60).toString().padStart(2, "0")}`
+          : "Неизвестно"
+
+      const resultMessage = `
+🎶 Музыка распознана!
+
+🎵 **Название:** ${title}
+👤 **Исполнитель:** ${artists}
+💿 **Альбом:** ${album}
+📅 **Год выпуска:** ${releaseDate}
+⏱ **Длительность:** ${durationFormatted}
+📊 **Точность:** ${Math.round(score)}%
+
+${score >= 80 ? "✅ Высокая точность распознавания" : score >= 50 ? "⚠️ Средняя точность распознавания" : "❌ Низкая точность распознавания"}`
+
+      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, resultMessage, {
+        reply_markup: createMainMenu().reply_markup,
+      })
+
+      // Если есть внешние ссылки, добавляем их
+      if (music.external_metadata) {
+        let linksMessage = "\n🔗 **Ссылки:**\n"
+        if (music.external_metadata.youtube) {
+          linksMessage += `🎬 [YouTube](${music.external_metadata.youtube.vid})\n`
+        }
+        if (music.external_metadata.spotify) {
+          linksMessage += `🎧 [Spotify](${music.external_metadata.spotify.track.external_urls.spotify})\n`
+        }
+        if (music.external_metadata.deezer) {
+          linksMessage += `🎵 [Deezer](${music.external_metadata.deezer.track.link})\n`
+        }
+
+        if (linksMessage.length > 20) {
+          await ctx.reply(linksMessage, { parse_mode: "Markdown", disable_web_page_preview: true })
+        }
+      }
+    } else {
+      // Музыка не распознана
+      const errorCode = result.status ? result.status.code : "unknown"
+      const errorMsg = result.status ? result.status.msg : "Неизвестная ошибка"
+
+      let userMessage = "❌ Не удалось распознать музыку.\n\n"
+
+      if (errorCode === 1001) {
+        userMessage += "🔍 Музыка не найдена в базе данных.\n"
+      } else if (errorCode === 2004) {
+        userMessage += "⚠️ Аудио слишком короткое или некачественное.\n"
+      } else if (errorCode === 3001) {
+        userMessage += "📱 Проблема с аудиофайлом.\n"
+      } else {
+        userMessage += `🔧 Техническая ошибка: ${errorMsg}\n`
+      }
+
+      userMessage +=
+        "\n💡 Советы для лучшего распознавания:\n" +
+        "• Используйте качественную запись\n" +
+        "• Минимизируйте фоновые шумы\n" +
+        "• Длительность: 10-60 секунд\n" +
+        "• Попробуйте другой фрагмент трека"
+
+      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, userMessage, {
+        reply_markup: createMainMenu().reply_markup,
+      })
+    }
+  } catch (error) {
+    console.error("Ошибка при распознавании музыки:", error)
+
+    let errorMessage = "❌ Произошла ошибка при распознавании музыки."
+
+    if (error.message.includes("ACRCloud API ключи не настроены")) {
+      errorMessage = "❌ Сервис распознавания музыки временно недоступен."
+    } else if (error.message.includes("timeout")) {
+      errorMessage = "❌ Превышено время ожидания. Попробуйте еще раз."
+    } else if (error.message.includes("network")) {
+      errorMessage = "❌ Проблема с сетью. Попробуйте позже."
+    }
+
+    try {
+      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage, {
+        reply_markup: createMainMenu().reply_markup,
+      })
+    } catch (editError) {
+      ctx.reply(errorMessage, createMainMenu())
+    }
+  }
+}
 
 // Функция обработки скачивания видео
 async function handleVideoDownload(ctx, url, quality) {
@@ -997,7 +1355,7 @@ app.use(express.json())
 
 // Health check endpoint
 app.get("/", (req, res) => {
-  res.send("🤖 Optimized Telegram Video Downloader Bot is running!")
+  res.send("🤖 Multi-functional Telegram Bot with Music Recognition is running!")
 })
 
 // Webhook endpoint
@@ -1022,7 +1380,7 @@ app.listen(PORT, async () => {
 
     // Получаем информацию о боте
     const botInfo = await bot.telegram.getMe()
-    console.log(`✅ Оптимизированный бот @${botInfo.username} успешно запущен!`)
+    console.log(`✅ Многофункциональный бот @${botInfo.username} успешно запущен!`)
   } catch (error) {
     console.error("❌ Ошибка при установке webhook:", error)
 
