@@ -595,8 +595,7 @@ YouTube, TikTok, Instagram, Twitter, Facebook, VK, RuTube, OK.ru, Twitch, Dailym
   // Обработка выбора качества
   if (text.includes("1080p")) {
     userSessions.set(userId, { ...session, quality: "1080" })
-    ctx.reply("✅ Установлено качество: 1080p
-(будет понижено автоматически если файл большой)", createMainMenu())
+    ctx.reply("✅ Установлено качество: 1080p\n(будет понижено автоматически если файл большой)", createMainMenu())
     return
   }
   if (text.includes("720p")) {
@@ -727,21 +726,19 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
       .substring(0, 50) // Ограничиваем длину
 
     // Обновляем сообщение - начинаем извлечение аудио
-    try {\
+    try {
       await ctx.telegram.editMessageText(
         ctx.chat.id,
         processingMessage.message_id,
         null,
-        "🎵 Извлекаю аудио...\n" +
-        `💾 Размер видео: $sizeMB.toFixed(2)МБ\n` +
-        `📊 Качество: $actualQualityp`,
+        "🎵 Извлекаю аудио...\n" + `💾 Размер видео: ${sizeMB.toFixed(2)} МБ\n` + `📊 Качество: ${actualQuality}p`,
       )
     } catch (editError) {
       console.log("Не удалось отредактировать сообщение")
     }
 
     // Извлекаем аудио
-    const audioFileName = `$cleanTitle.mp3`
+    const audioFileName = `${cleanTitle}.mp3`
     const audioPath = path.join(tempDir, audioFileName)
 
     await extractAudio(actualPath, audioPath)
@@ -852,7 +849,7 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
     try {
       await ctx.deleteMessage(processingMessage.message_id)
     } catch (deleteError) {
-      console.log("Не удалось удалить сообщение о процессе")
+      console.log(\"Не удалось удалить сообщение о процессе")
     }
   } catch (error) {
     console.error("Ошибка при обработке видео:", error)
