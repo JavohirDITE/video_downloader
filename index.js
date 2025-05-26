@@ -4,6 +4,7 @@ const fs = require("fs")
 const path = require("path")
 const util = require("util")
 const express = require("express")
+const os = require("os")
 
 // Преобразуем exec в промис для удобства использования
 const execPromise = util.promisify(exec)
@@ -15,6 +16,10 @@ if (!BOT_TOKEN) {
   console.error("Пожалуйста, установите BOT_TOKEN в настройках Railway или в файле .env")
   process.exit(1)
 }
+
+// Список админов (ID пользователей)
+const ADMIN_IDS = process.env.ADMIN_IDS ? process.env.ADMIN_IDS.split(",").map((id) => Number.parseInt(id.trim())) : []
+console.log("👑 Админы бота:", ADMIN_IDS.length > 0 ? ADMIN_IDS : "Не настроены")
 
 console.log("✅ Токен бота найден, длина:", BOT_TOKEN.length)
 
@@ -34,10 +39,72 @@ if (!fs.existsSync(tempDir)) {
 // Хранилище для пользовательских сессий
 const userSessions = new Map()
 
+// Статистика бота
+const botStats = {
+  startTime: Date.now(),
+  totalUsers: new Set(),
+  totalRequests: 0,
+  successfulDownloads: 0,
+  failedDownloads: 0,
+  totalVideoSize: 0,
+  totalAudioSize: 0,
+  platformStats: {},
+  dailyStats: {},
+}
+
+// Заблокированные пользователи
+const blockedUsers = new Set()
+
 // Константы для размеров файлов
 const MAX_VIDEO_SIZE_MB = 45 // Оставляем запас для Telegram лимита в 50 МБ
 const MAX_DOCUMENT_SIZE_MB = 2000 // 2 ГБ лимит Telegram
 const TARGET_SIZE_MB = 25 // Целевой размер для комфортной отправки
+
+// Функция проверки админа
+function isAdmin(userId) {
+  return ADMIN_IDS.includes(userId)
+}
+
+// Функция проверки блокировки
+function isBlocked(userId) {
+  return blockedUsers.has(userId)
+}
+
+// Функция обновления статистики
+function updateStats(type, data = {}) {
+  const today = new Date().toISOString().split("T")[0]
+
+  if (!botStats.dailyStats[today]) {
+    botStats.dailyStats[today] = {
+      requests: 0,
+      downloads: 0,
+      users: new Set(),
+    }
+  }
+
+  switch (type) {
+    case "request":
+      botStats.totalRequests++
+      botStats.dailyStats[today].requests++
+      if (data.userId) {
+        botStats.totalUsers.add(data.userId)
+        botStats.dailyStats[today].users.add(data.userId)
+      }
+      break
+    case "download_success":
+      botStats.successfulDownloads++
+      botStats.dailyStats[today].downloads++
+      if (data.platform) {
+        botStats.platformStats[data.platform] = (botStats.platformStats[data.platform] || 0) + 1
+      }
+      if (data.videoSize) botStats.totalVideoSize += data.videoSize
+      if (data.audioSize) botStats.totalAudioSize += data.audioSize
+      break
+    case "download_fail":
+      botStats.failedDownloads++
+      break
+  }
+}
 
 // Функция для очистки временных файлов
 function cleanupFiles(filePath) {
@@ -403,12 +470,15 @@ async function extractAudio(videoPath, audioPath) {
 }
 
 // Создание главного меню с обычными кнопками
-function createMainMenu() {
-  return Markup.keyboard([
-    ["📥 Скачать видео + аудио"],
-    ["ℹ️ Информация о видео", "⚙️ Настройки качества"],
-    ["❓ Помощь"],
-  ]).resize()
+function createMainMenu(userId) {
+  const buttons = [["📥 Скачать видео + аудио"], ["ℹ️ Информация о видео", "⚙️ Настройки качества"], ["❓ Помощь"]]
+
+  // Добавляем кнопку админки только для админов
+  if (isAdmin(userId)) {
+    buttons.push(["👑 Админ панель"])
+  }
+
+  return Markup.keyboard(buttons).resize()
 }
 
 // Создание меню выбора качества
@@ -420,8 +490,47 @@ function createQualityMenu() {
   ]).resize()
 }
 
+// Создание админского меню
+function createAdminMenu() {
+  return Markup.keyboard([
+    ["📊 Статистика", "👥 Пользователи"],
+    ["📢 Рассылка", "🚫 Управление блокировками"],
+    ["💾 Система", "📋 Логи"],
+    ["🔄 Очистить кеш", "🏠 Главное меню"],
+  ]).resize()
+}
+
+// Функция получения статистики системы
+function getSystemInfo() {
+  const uptime = process.uptime()
+  const uptimeHours = Math.floor(uptime / 3600)
+  const uptimeMinutes = Math.floor((uptime % 3600) / 60)
+
+  return {
+    uptime: `${uptimeHours}ч ${uptimeMinutes}м`,
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+    },
+    cpu: os.loadavg()[0].toFixed(2),
+    platform: os.platform(),
+    nodeVersion: process.version,
+    tempFiles: fs.existsSync(tempDir) ? fs.readdirSync(tempDir).length : 0,
+  }
+}
+
 // Команда /start - приветствие с меню
 bot.start((ctx) => {
+  const userId = ctx.from.id
+
+  // Проверяем блокировку
+  if (isBlocked(userId)) {
+    return ctx.reply("🚫 Вы заблокированы и не можете использовать бота.")
+  }
+
+  // Обновляем статистику
+  updateStats("request", { userId })
+
   const welcomeMessage =
     "🎬 Добро пожаловать в видео-загрузчик!\n\n" +
     "🌟 Возможности:\n" +
@@ -438,11 +547,17 @@ bot.start((ctx) => {
     "YouTube, TikTok, Instagram, Twitter/X, Facebook, VK, RuTube, OK.ru, Twitch, Dailymotion и 1000+ других!\n\n" +
     "👇 Выберите действие в меню ниже или отправьте ссылку на видео:"
 
-  ctx.reply(welcomeMessage, createMainMenu())
+  ctx.reply(welcomeMessage, createMainMenu(userId))
 })
 
 // Команда помощи
 bot.command("help", (ctx) => {
+  const userId = ctx.from.id
+
+  if (isBlocked(userId)) {
+    return ctx.reply("🚫 Вы заблокированы и не можете использовать бота.")
+  }
+
   const helpMessage =
     "📖 Подробная справка:\n\n" +
     "🎥 Скачивание видео + аудио:\n" +
@@ -472,7 +587,7 @@ bot.command("help", (ctx) => {
     "• Большие файлы отправляются как документы\n" +
     "• Аудио всегда извлекается автоматически"
 
-  ctx.reply(helpMessage, createMainMenu())
+  ctx.reply(helpMessage, createMainMenu(userId))
 })
 
 // Обработка текстовых сообщений (меню)
@@ -481,7 +596,193 @@ bot.on("text", async (ctx) => {
   const userId = ctx.from.id
   const session = userSessions.get(userId) || {}
 
-  // Обработка команд меню
+  // Проверяем блокировку
+  if (isBlocked(userId)) {
+    return ctx.reply("🚫 Вы заблокированы и не можете использовать бота.")
+  }
+
+  // Обновляем статистику
+  updateStats("request", { userId })
+
+  // Обработка админских команд
+  if (text === "👑 Админ панель" && isAdmin(userId)) {
+    const systemInfo = getSystemInfo()
+    const message =
+      "👑 Админ панель\n\n" +
+      "📊 Быстрая статистика:\n" +
+      `• Пользователей: ${botStats.totalUsers.size}\n` +
+      `• Запросов: ${botStats.totalRequests}\n` +
+      `• Успешных загрузок: ${botStats.successfulDownloads}\n` +
+      `• Время работы: ${systemInfo.uptime}\n` +
+      `• Память: ${systemInfo.memory.used}/${systemInfo.memory.total} МБ\n\n` +
+      "Выберите действие:"
+
+    ctx.reply(message, createAdminMenu())
+    return
+  }
+
+  if (text === "📊 Статистика" && isAdmin(userId)) {
+    const systemInfo = getSystemInfo()
+    const today = new Date().toISOString().split("T")[0]
+    const todayStats = botStats.dailyStats[today] || { requests: 0, downloads: 0, users: new Set() }
+
+    // Топ платформы
+    const topPlatforms = Object.entries(botStats.platformStats)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([platform, count]) => `• ${platform}: ${count}`)
+      .join("\n")
+
+    const message =
+      "📊 Подробная статистика бота\n\n" +
+      "📈 Общая статистика:\n" +
+      `• Всего пользователей: ${botStats.totalUsers.size}\n` +
+      `• Всего запросов: ${botStats.totalRequests}\n` +
+      `• Успешных загрузок: ${botStats.successfulDownloads}\n` +
+      `• Неудачных загрузок: ${botStats.failedDownloads}\n` +
+      `• Общий размер видео: ${(botStats.totalVideoSize / 1024).toFixed(2)} ГБ\n` +
+      `• Общий размер аудио: ${(botStats.totalAudioSize / 1024).toFixed(2)} ГБ\n\n` +
+      "📅 Сегодня:\n" +
+      `• Запросов: ${todayStats.requests}\n` +
+      `• Загрузок: ${todayStats.downloads}\n` +
+      `• Активных пользователей: ${todayStats.users.size}\n\n` +
+      "🌐 Топ платформы:\n" +
+      (topPlatforms || "Нет данных") +
+      "\n\n" +
+      "💻 Система:\n" +
+      `• Время работы: ${systemInfo.uptime}\n` +
+      `• Память: ${systemInfo.memory.used}/${systemInfo.memory.total} МБ\n` +
+      `• CPU загрузка: ${systemInfo.cpu}\n` +
+      `• Временных файлов: ${systemInfo.tempFiles}\n` +
+      `• Платформа: ${systemInfo.platform}\n` +
+      `• Node.js: ${systemInfo.nodeVersion}`
+
+    ctx.reply(message, createAdminMenu())
+    return
+  }
+
+  if (text === "👥 Пользователи" && isAdmin(userId)) {
+    const activeUsers = Array.from(userSessions.keys()).length
+    const blockedCount = blockedUsers.size
+    const today = new Date().toISOString().split("T")[0]
+    const todayUsers = botStats.dailyStats[today]?.users.size || 0
+
+    const message =
+      "👥 Управление пользователями\n\n" +
+      `• Всего пользователей: ${botStats.totalUsers.size}\n` +
+      `• Активных сессий: ${activeUsers}\n` +
+      `• Заблокированных: ${blockedCount}\n` +
+      `• Активных сегодня: ${todayUsers}\n\n` +
+      "Для блокировки пользователя отправьте:\n" +
+      "/block [ID пользователя]\n\n" +
+      "Для разблокировки:\n" +
+      "/unblock [ID пользователя]\n\n" +
+      "Для получения ID пользователя переслайте его сообщение боту."
+
+    ctx.reply(message, createAdminMenu())
+    return
+  }
+
+  if (text === "📢 Рассылка" && isAdmin(userId)) {
+    const message =
+      "📢 Рассылка сообщений\n\n" +
+      "Для отправки сообщения всем пользователям используйте:\n" +
+      "/broadcast [ваше сообщение]\n\n" +
+      "⚠️ Будьте осторожны! Сообщение получат все пользователи бота.\n\n" +
+      `Сообщение получат: ${botStats.totalUsers.size} пользователей`
+
+    ctx.reply(message, createAdminMenu())
+    return
+  }
+
+  if (text === "🚫 Управление блокировками" && isAdmin(userId)) {
+    const blockedList = Array.from(blockedUsers).slice(0, 10).join(", ") || "Нет заблокированных"
+
+    const message =
+      "🚫 Управление блокировками\n\n" +
+      `Заблокированных пользователей: ${blockedUsers.size}\n\n` +
+      "Последние заблокированные:\n" +
+      blockedList +
+      "\n\n" +
+      "Команды:\n" +
+      "• /block [ID] - заблокировать\n" +
+      "• /unblock [ID] - разблокировать\n" +
+      "• /blocklist - список всех заблокированных"
+
+    ctx.reply(message, createAdminMenu())
+    return
+  }
+
+  if (text === "💾 Система" && isAdmin(userId)) {
+    const systemInfo = getSystemInfo()
+
+    const message =
+      "💾 Информация о системе\n\n" +
+      `🖥 Платформа: ${systemInfo.platform}\n` +
+      `⚡ Node.js: ${systemInfo.nodeVersion}\n` +
+      `⏱ Время работы: ${systemInfo.uptime}\n` +
+      `🧠 Память: ${systemInfo.memory.used}/${systemInfo.memory.total} МБ\n` +
+      `📊 CPU загрузка: ${systemInfo.cpu}\n` +
+      `📁 Временных файлов: ${systemInfo.tempFiles}\n` +
+      `👥 Активных сессий: ${userSessions.size}\n\n` +
+      "Команды:\n" +
+      "• /restart - перезапуск бота\n" +
+      "• /cleanup - очистка временных файлов\n" +
+      "• /gc - сборка мусора"
+
+    ctx.reply(message, createAdminMenu())
+    return
+  }
+
+  if (text === "📋 Логи" && isAdmin(userId)) {
+    try {
+      // Получаем последние логи (если есть файл логов)
+      const message =
+        "📋 Системные логи\n\n" +
+        "Последние события:\n" +
+        `• Запуск бота: ${new Date(botStats.startTime).toLocaleString("ru")}\n` +
+        `• Последний запрос: ${new Date().toLocaleString("ru")}\n` +
+        `• Активных процессов: ${userSessions.size}\n` +
+        `• Ошибок за сегодня: ${botStats.failedDownloads}\n\n` +
+        "Для получения полных логов используйте:\n" +
+        "/logs [количество строк]"
+
+      ctx.reply(message, createAdminMenu())
+    } catch (error) {
+      ctx.reply("❌ Ошибка при получении логов", createAdminMenu())
+    }
+    return
+  }
+
+  if (text === "🔄 Очистить кеш" && isAdmin(userId)) {
+    try {
+      // Очищаем временные файлы
+      cleanupTempDir()
+
+      // Очищаем старые сессии
+      userSessions.clear()
+
+      // Принудительная сборка мусора
+      if (global.gc) {
+        global.gc()
+      }
+
+      const message =
+        "✅ Кеш очищен!\n\n" +
+        "Выполнено:\n" +
+        "• Удалены временные файлы\n" +
+        "• Очищены пользовательские сессии\n" +
+        "• Выполнена сборка мусора\n\n" +
+        "Система готова к работе."
+
+      ctx.reply(message, createAdminMenu())
+    } catch (error) {
+      ctx.reply("❌ Ошибка при очистке кеша", createAdminMenu())
+    }
+    return
+  }
+
+  // Обработка команд меню для обычных пользователей
   if (text === "📥 Скачать видео + аудио") {
     const message =
       "📥 Режим скачивания видео + аудио активирован!\n\n" +
@@ -493,7 +794,7 @@ bot.on("text", async (ctx) => {
       "🌐 Поддерживаемые платформы:\n" +
       "YouTube, TikTok, Instagram, Twitter, Facebook, VK, RuTube, OK.ru, Twitch, Dailymotion и многие другие!"
 
-    ctx.reply(message, createMainMenu())
+    ctx.reply(message, createMainMenu(userId))
     userSessions.set(userId, { ...session, action: "download_video", quality: session.quality || "720" })
     return
   }
@@ -508,7 +809,7 @@ bot.on("text", async (ctx) => {
       "• Примерный размер файла\n" +
       "• Количество просмотров"
 
-    ctx.reply(message, createMainMenu())
+    ctx.reply(message, createMainMenu(userId))
     userSessions.set(userId, { ...session, action: "video_info" })
     return
   }
@@ -536,7 +837,7 @@ bot.on("text", async (ctx) => {
       "• Формат: MP3 128 kbps\n" +
       "• Отправляется вместе с видео"
 
-    return ctx.replyWithHTML(helpMessage, createMainMenu())
+    return ctx.replyWithHTML(helpMessage, createMainMenu(userId))
   }
 
   if (text === "⚙️ Настройки качества") {
@@ -558,39 +859,42 @@ bot.on("text", async (ctx) => {
   // Обработка выбора качества
   if (text.includes("1080p")) {
     userSessions.set(userId, { ...session, quality: "1080" })
-    ctx.reply("✅ Установлено качество: 1080p\n(будет понижено автоматически если файл большой)", createMainMenu())
+    ctx.reply(
+      "✅ Установлено качество: 1080p\n(будет понижено автоматически если файл большой)",
+      createMainMenu(userId),
+    )
     return
   }
   if (text.includes("720p")) {
     userSessions.set(userId, { ...session, quality: "720" })
-    ctx.reply("✅ Установлено качество: 720p (рекомендуемое)", createMainMenu())
+    ctx.reply("✅ Установлено качество: 720p (рекомендуемое)", createMainMenu(userId))
     return
   }
   if (text.includes("480p")) {
     userSessions.set(userId, { ...session, quality: "480" })
-    ctx.reply("✅ Установлено качество: 480p (быстрое скачивание)", createMainMenu())
+    ctx.reply("✅ Установлено качество: 480p (быстрое скачивание)", createMainMenu(userId))
     return
   }
   if (text.includes("360p")) {
     userSessions.set(userId, { ...session, quality: "360" })
-    ctx.reply("✅ Установлено качество: 360p (экономия трафика)", createMainMenu())
+    ctx.reply("✅ Установлено качество: 360p (экономия трафика)", createMainMenu(userId))
     return
   }
   if (text.includes("Авто")) {
     userSessions.set(userId, { ...session, quality: "auto" })
-    ctx.reply("✅ Установлен автоматический выбор качества (рекомендуется)", createMainMenu())
+    ctx.reply("✅ Установлен автоматический выбор качества (рекомендуется)", createMainMenu(userId))
     return
   }
 
   if (text === "🏠 Главное меню") {
-    ctx.reply("🏠 Главное меню:", createMainMenu())
+    ctx.reply("🏠 Главное меню:", createMainMenu(userId))
     userSessions.delete(userId)
     return
   }
 
   // Если сообщение начинается с /, но это не известная команда
   if (text.startsWith("/")) {
-    return ctx.reply("❌ Неизвестная команда. Используйте /start для начала работы.", createMainMenu())
+    return ctx.reply("❌ Неизвестная команда. Используйте /start для начала работы.", createMainMenu(userId))
   }
 
   // Проверяем, является ли текст ссылкой
@@ -601,7 +905,7 @@ bot.on("text", async (ctx) => {
       "YouTube, TikTok, Instagram, Twitter, Facebook, VK, RuTube, OK.ru, Twitch, Dailymotion и многие другие!\n\n" +
       "Или выберите действие в меню:"
 
-    return ctx.reply(message, createMainMenu())
+    return ctx.reply(message, createMainMenu(userId))
   }
 
   // Обрабатываем ссылку в зависимости от активного режима
@@ -613,12 +917,119 @@ bot.on("text", async (ctx) => {
     // Если нет активного режима, предлагаем выбрать действие
     const platform = detectPlatform(text)
     const message = `💡 Я вижу ссылку на видео с платформы: ${platform.toUpperCase()}\n\nВыберите действие в меню:`
-    ctx.reply(message, createMainMenu())
+    ctx.reply(message, createMainMenu(userId))
+  }
+})
+
+// Админские команды
+bot.command("block", (ctx) => {
+  const userId = ctx.from.id
+  if (!isAdmin(userId)) return
+
+  const args = ctx.message.text.split(" ")
+  if (args.length < 2) {
+    return ctx.reply("Использование: /block [ID пользователя]")
+  }
+
+  const targetId = Number.parseInt(args[1])
+  if (isNaN(targetId)) {
+    return ctx.reply("❌ Неверный ID пользователя")
+  }
+
+  blockedUsers.add(targetId)
+  ctx.reply(`✅ Пользователь ${targetId} заблокирован`)
+})
+
+bot.command("unblock", (ctx) => {
+  const userId = ctx.from.id
+  if (!isAdmin(userId)) return
+
+  const args = ctx.message.text.split(" ")
+  if (args.length < 2) {
+    return ctx.reply("Использование: /unblock [ID пользователя]")
+  }
+
+  const targetId = Number.parseInt(args[1])
+  if (isNaN(targetId)) {
+    return ctx.reply("❌ Неверный ID пользователя")
+  }
+
+  blockedUsers.delete(targetId)
+  ctx.reply(`✅ Пользователь ${targetId} разблокирован`)
+})
+
+bot.command("broadcast", async (ctx) => {
+  const userId = ctx.from.id
+  if (!isAdmin(userId)) return
+
+  const message = ctx.message.text.replace("/broadcast ", "")
+  if (!message) {
+    return ctx.reply("Использование: /broadcast [сообщение]")
+  }
+
+  const users = Array.from(botStats.totalUsers)
+  let sent = 0
+  let failed = 0
+
+  const statusMsg = await ctx.reply(`📢 Начинаю рассылку для ${users.length} пользователей...`)
+
+  for (const targetUserId of users) {
+    try {
+      await bot.telegram.sendMessage(targetUserId, `📢 Сообщение от администрации:\n\n${message}`)
+      sent++
+    } catch (error) {
+      failed++
+    }
+
+    // Обновляем статус каждые 10 отправок
+    if ((sent + failed) % 10 === 0) {
+      try {
+        await ctx.telegram.editMessageText(
+          ctx.chat.id,
+          statusMsg.message_id,
+          null,
+          `📢 Рассылка: ${sent + failed}/${users.length}\n✅ Отправлено: ${sent}\n❌ Ошибок: ${failed}`,
+        )
+      } catch (e) {}
+    }
+  }
+
+  await ctx.telegram.editMessageText(
+    ctx.chat.id,
+    statusMsg.message_id,
+    null,
+    `✅ Рассылка завершена!\n📤 Отправлено: ${sent}\n❌ Ошибок: ${failed}`,
+  )
+})
+
+bot.command("cleanup", (ctx) => {
+  const userId = ctx.from.id
+  if (!isAdmin(userId)) return
+
+  try {
+    cleanupTempDir()
+    ctx.reply("✅ Временные файлы очищены")
+  } catch (error) {
+    ctx.reply("❌ Ошибка при очистке файлов")
+  }
+})
+
+// Обработка пересланных сообщений для получения ID
+bot.on("forward_date", (ctx) => {
+  const userId = ctx.from.id
+  if (!isAdmin(userId)) return
+
+  const forwardedUserId = ctx.message.forward_from?.id
+  if (forwardedUserId) {
+    ctx.reply(`👤 ID пользователя: ${forwardedUserId}`)
+  } else {
+    ctx.reply("❌ Не удалось получить ID пользователя")
   }
 })
 
 // Объединенная функция обработки скачивания видео + аудио
 async function handleVideoAndAudioDownload(ctx, url, quality) {
+  const userId = ctx.from.id
   let processingMessage
   try {
     const platform = detectPlatform(url)
@@ -759,7 +1170,7 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
           caption: "🎵 Аудио извлечено из видео\n📊 Качество: 128 kbps MP3",
           title: videoInfo.title,
           performer: videoInfo.uploader,
-          reply_markup: createMainMenu().reply_markup,
+          reply_markup: createMainMenu(userId).reply_markup,
         },
       )
     } else {
@@ -770,10 +1181,17 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
         },
         {
           caption: "🎵 Аудио извлечено из видео\n📊 Качество: 128 kbps MP3\n\n💡 Отправлено как документ из-за размера",
-          reply_markup: createMainMenu().reply_markup,
+          reply_markup: createMainMenu(userId).reply_markup,
         },
       )
     }
+
+    // Обновляем статистику успешной загрузки
+    updateStats("download_success", {
+      platform: resultPlatform,
+      videoSize: sizeMB,
+      audioSize: audioSizeMB,
+    })
 
     // Удаляем временные файлы
     cleanupFiles(actualPath)
@@ -787,6 +1205,9 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
     }
   } catch (error) {
     console.error("Ошибка при обработке видео:", error)
+
+    // Обновляем статистику неудачной загрузки
+    updateStats("download_fail")
 
     let errorMessage = "❌ Произошла ошибка при скачивании видео."
 
@@ -806,7 +1227,7 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
       errorMessage = "❌ Превышено время ожидания. Попробуйте позже или выберите меньшее качество."
     }
 
-    ctx.reply(errorMessage, createMainMenu())
+    ctx.reply(errorMessage, createMainMenu(userId))
 
     // Удаляем сообщение о процессе
     try {
@@ -819,6 +1240,7 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
 
 // Функция получения информации о видео
 async function handleVideoInfo(ctx, url) {
+  const userId = ctx.from.id
   let processingMessage
   try {
     const platform = detectPlatform(url)
@@ -858,6 +1280,7 @@ async function handleVideoInfo(ctx, url) {
     if (videoInfo.duration) {
       const estimatedSize720p = (videoInfo.duration * 0.5).toFixed(1) // Примерно 0.5 МБ/мин для 720p
       const estimatedSize480p = (videoInfo.duration * 0.3).toFixed(1) // Примерно 0.3 МБ/мин для 480p
+      const estimatedAudioSize = (videoInfo.duration * 0.1).toFixed(1) //  // Примерно 0.3 МБ/мин для 480p
       const estimatedAudioSize = (videoInfo.duration * 0.1).toFixed(1) // Примерно 0.1 МБ/мин для MP3
       sizeEstimate =
         `\n📊 Примерный размер:\n` +
@@ -905,12 +1328,12 @@ async function handleVideoInfo(ctx, url) {
     })
 
     // Отправляем новое сообщение с меню
-    await ctx.reply("Выберите действие:", createMainMenu())
+    await ctx.reply("Выберите действие:", createMainMenu(userId))
   } catch (error) {
     console.error("Ошибка при получении информации:", error)
     ctx.reply(
       "❌ Не удалось получить информацию о видео. Возможно, видео недоступно или ссылка неверная.",
-      createMainMenu(),
+      createMainMenu(userId),
     )
   }
 }
@@ -920,7 +1343,8 @@ bot.catch((err, ctx) => {
   console.error("Ошибка бота:", err)
   if (ctx) {
     try {
-      ctx.reply("❌ Произошла внутренняя ошибка. Попробуйте позже.", createMainMenu())
+      const userId = ctx.from?.id
+      ctx.reply("❌ Произошла внутренняя ошибка. Попробуйте позже.", createMainMenu(userId))
     } catch (replyError) {
       console.error("Не удалось отправить сообщение об ошибке:", replyError)
     }
