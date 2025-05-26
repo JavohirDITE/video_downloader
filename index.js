@@ -61,6 +61,31 @@ function isValidUrl(string) {
   }
 }
 
+// Функция для определения платформы по URL
+function detectPlatform(url) {
+  const urlLower = url.toLowerCase()
+
+  if (urlLower.includes("youtube.com") || urlLower.includes("youtu.be")) {
+    return "youtube"
+  } else if (
+    urlLower.includes("tiktok.com") ||
+    urlLower.includes("vm.tiktok.com") ||
+    urlLower.includes("vt.tiktok.com")
+  ) {
+    return "tiktok"
+  } else if (urlLower.includes("instagram.com")) {
+    return "instagram"
+  } else if (urlLower.includes("twitter.com") || urlLower.includes("x.com")) {
+    return "twitter"
+  } else if (urlLower.includes("facebook.com") || urlLower.includes("fb.com")) {
+    return "facebook"
+  } else if (urlLower.includes("vk.com")) {
+    return "vk"
+  } else {
+    return "other"
+  }
+}
+
 // Функция для получения информации о видео
 async function getVideoInfo(url) {
   const command = `yt-dlp --dump-json --no-playlist "${url}"`
@@ -110,26 +135,45 @@ function getOptimalQuality(duration, requestedQuality) {
 // Улучшенная функция для скачивания видео с автоматическим выбором качества
 async function downloadVideoWithSizeControl(url, outputPath, requestedQuality = "720", maxSizeMB = MAX_VIDEO_SIZE_MB) {
   const videoInfo = await getVideoInfo(url)
+  const platform = detectPlatform(url)
   const quality = getOptimalQuality(videoInfo.duration, requestedQuality)
 
   console.log(`Запрошенное качество: ${requestedQuality}p, оптимальное: ${quality}p`)
   console.log(`Длительность видео: ${videoInfo.duration} секунд`)
+  console.log(`Платформа: ${platform}`)
 
-  // Список качеств для попыток (от запрошенного к минимальному)
-  const qualityFallback = {
-    1080: ["1080", "720", "480", "360"],
-    720: ["720", "480", "360"],
-    480: ["480", "360"],
-    360: ["360"],
-    best: ["720", "480", "360"],
-    original: ["720", "480", "360"],
+  // Список качеств для попыток в зависимости от платформы
+  let qualityFallback
+
+  if (platform === "tiktok" || platform === "instagram" || platform === "twitter") {
+    // Для платформ с ограниченными форматами
+    qualityFallback = {
+      1080: ["best", "worst"],
+      720: ["best", "worst"],
+      480: ["worst", "best"],
+      360: ["worst"],
+      best: ["best", "worst"],
+      original: ["best", "worst"],
+      auto: ["best", "worst"],
+    }
+  } else {
+    // Для YouTube и других платформ с полной поддержкой
+    qualityFallback = {
+      1080: ["1080", "720", "480", "360"],
+      720: ["720", "480", "360"],
+      480: ["480", "360"],
+      360: ["360"],
+      best: ["720", "480", "360"],
+      original: ["720", "480", "360"],
+      auto: ["720", "480", "360"],
+    }
   }
 
-  const qualitiesToTry = qualityFallback[quality] || ["720", "480", "360"]
+  const qualitiesToTry = qualityFallback[quality] || ["best", "worst"]
 
   for (const currentQuality of qualitiesToTry) {
     try {
-      console.log(`Пробуем качество: ${currentQuality}p`)
+      console.log(`Пробуем качество: ${currentQuality} для платформы ${platform}`)
 
       const success = await downloadVideo(url, outputPath, currentQuality)
       if (!success) continue
@@ -145,99 +189,151 @@ async function downloadVideoWithSizeControl(url, outputPath, requestedQuality = 
       const stats = fs.statSync(actualPath)
       const sizeMB = stats.size / (1024 * 1024)
 
-      console.log(`Размер файла в качестве ${currentQuality}p: ${sizeMB.toFixed(2)} МБ`)
+      console.log(`Размер файла в качестве ${currentQuality}: ${sizeMB.toFixed(2)} МБ`)
 
       if (sizeMB <= maxSizeMB) {
-        console.log(`✅ Качество ${currentQuality}p подходит по размеру`)
-        return { success: true, actualPath, sizeMB, quality: currentQuality }
+        console.log(`✅ Качество ${currentQuality} подходит по размеру`)
+        return { success: true, actualPath, sizeMB, quality: currentQuality, platform }
       } else {
-        console.log(`❌ Качество ${currentQuality}p слишком большое, пробуем меньше`)
+        console.log(`❌ Качество ${currentQuality} слишком большое, пробуем меньше`)
         cleanupFiles(actualPath)
         continue
       }
     } catch (error) {
-      console.error(`Ошибка при скачивании в качестве ${currentQuality}p:`, error)
+      console.error(`Ошибка при скачивании в качестве ${currentQuality}:`, error)
+
+      // Для TikTok и других платформ пробуем более простой селектор
+      if (platform === "tiktok" || platform === "instagram") {
+        try {
+          console.log(`Пробуем упрощенный селектор для ${platform}...`)
+          const simpleSuccess = await downloadVideoSimple(url, outputPath)
+          if (simpleSuccess) {
+            const files = fs
+              .readdirSync(tempDir)
+              .filter((file) => file.includes(path.basename(outputPath, path.extname(outputPath))))
+
+            if (files.length > 0) {
+              const actualPath = path.join(tempDir, files[0])
+              const stats = fs.statSync(actualPath)
+              const sizeMB = stats.size / (1024 * 1024)
+
+              if (sizeMB <= MAX_DOCUMENT_SIZE_MB) {
+                return { success: true, actualPath, sizeMB, quality: "auto", platform, asDocument: sizeMB > maxSizeMB }
+              }
+            }
+          }
+        } catch (simpleError) {
+          console.error("Упрощенный метод также не сработал:", simpleError)
+        }
+      }
       continue
     }
   }
 
-  // Если ничего не подошло, пробуем скачать в минимальном качестве для документа
-  try {
-    console.log("Скачиваем в минимальном качестве для отправки документом...")
-    const success = await downloadVideo(url, outputPath, "360")
-    if (success) {
-      const files = fs
-        .readdirSync(tempDir)
-        .filter((file) => file.includes(path.basename(outputPath, path.extname(outputPath))))
-
-      if (files.length > 0) {
-        const actualPath = path.join(tempDir, files[0])
-        const stats = fs.statSync(actualPath)
-        const sizeMB = stats.size / (1024 * 1024)
-
-        if (sizeMB <= MAX_DOCUMENT_SIZE_MB) {
-          return { success: true, actualPath, sizeMB, quality: "360", asDocument: true }
-        }
-      }
-    }
-  } catch (error) {
-    console.error("Ошибка при скачивании в минимальном качестве:", error)
-  }
-
-  return { success: false, error: "Не удалось скачать видео в подходящем размере" }
+  return { success: false, error: `Не удалось скачать видео с платформы ${platform}` }
 }
 
-// Улучшенная функция для скачивания видео
+// Улучшенная функция для скачивания видео с поддержкой разных платформ
 async function downloadVideo(url, outputPath, quality = "720") {
+  // Определяем платформу по URL
+  const platform = detectPlatform(url)
   let formatSelector
 
-  // Оптимизированные селекторы для меньшего размера файлов
-  switch (quality) {
-    case "1080":
-      formatSelector =
-        "bestvideo[height<=1080][filesize<50M][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][filesize<50M][ext=mp4]/best[height<=1080]"
-      break
-    case "720":
-      formatSelector =
-        "bestvideo[height<=720][filesize<35M][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][filesize<35M][ext=mp4]/best[height<=720]"
-      break
-    case "480":
-      formatSelector =
-        "bestvideo[height<=480][filesize<25M][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][filesize<25M][ext=mp4]/best[height<=480]"
-      break
-    case "360":
-      formatSelector =
-        "bestvideo[height<=360][filesize<15M][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][filesize<15M][ext=mp4]/best[height<=360]"
-      break
-    case "best":
-      formatSelector = "best[filesize<35M][ext=mp4]/best[ext=mp4]"
-      break
-    case "original":
-      formatSelector = "best"
-      break
-    default:
-      formatSelector =
-        "bestvideo[height<=720][filesize<35M][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][filesize<35M][ext=mp4]/best[height<=720]"
+  // Специальные селекторы для разных платформ
+  if (platform === "tiktok") {
+    // TikTok имеет ограниченные форматы
+    switch (quality) {
+      case "1080":
+      case "720":
+        formatSelector = "best[ext=mp4]/best"
+        break
+      case "480":
+      case "360":
+        formatSelector = "worst[ext=mp4]/worst"
+        break
+      default:
+        formatSelector = "best[ext=mp4]/best"
+    }
+  } else if (platform === "instagram") {
+    // Instagram специфические форматы
+    switch (quality) {
+      case "1080":
+        formatSelector = "best[height<=1080]/best"
+        break
+      case "720":
+        formatSelector = "best[height<=720]/best"
+        break
+      case "480":
+        formatSelector = "best[height<=480]/best"
+        break
+      case "360":
+        formatSelector = "worst/best"
+        break
+      default:
+        formatSelector = "best[height<=720]/best"
+    }
+  } else if (platform === "twitter") {
+    // Twitter/X форматы
+    formatSelector = quality === "360" ? "worst[ext=mp4]/worst" : "best[ext=mp4]/best"
+  } else {
+    // YouTube и другие платформы с полной поддержкой форматов
+    switch (quality) {
+      case "1080":
+        formatSelector =
+          "bestvideo[height<=1080][filesize<50M][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][filesize<50M][ext=mp4]/best[height<=1080]"
+        break
+      case "720":
+        formatSelector =
+          "bestvideo[height<=720][filesize<35M][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][filesize<35M][ext=mp4]/best[height<=720]"
+        break
+      case "480":
+        formatSelector =
+          "bestvideo[height<=480][filesize<25M][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][filesize<25M][ext=mp4]/best[height<=480]"
+        break
+      case "360":
+        formatSelector =
+          "bestvideo[height<=360][filesize<15M][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][filesize<15M][ext=mp4]/best[height<=360]"
+        break
+      case "best":
+        formatSelector = "best[filesize<35M][ext=mp4]/best[ext=mp4]"
+        break
+      case "original":
+        formatSelector = "best"
+        break
+      default:
+        formatSelector =
+          "bestvideo[height<=720][filesize<35M][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][filesize<35M][ext=mp4]/best[height<=720]"
+    }
   }
 
   const ytDlpOptions = [
     "--no-playlist",
     `--format "${formatSelector}"`,
     '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"',
-    '--referer "https://www.youtube.com/"',
     "--extractor-retries 3",
     "--fragment-retries 3",
     "--retry-sleep 1",
     "--no-check-certificate",
-    "--merge-output-format mp4",
-    "--no-write-sub", // Отключаем субтитры для экономии места
+    "--no-write-sub",
     "--no-write-auto-sub",
-    // Добавляем ограничение скорости для стабильности
     "--limit-rate 10M",
-  ].join(" ")
+  ]
 
-  const command = `yt-dlp ${ytDlpOptions} -o "${outputPath}" "${url}"`
-  console.log(`Выполняется команда: yt-dlp с качеством ${quality}p`)
+  // Добавляем специфичные для платформы опции
+  if (platform === "youtube") {
+    ytDlpOptions.push('--referer "https://www.youtube.com/"')
+    ytDlpOptions.push("--merge-output-format mp4")
+  } else if (platform === "tiktok") {
+    // TikTok не нужен merge, так как видео уже в mp4
+    ytDlpOptions.push('--add-header "Accept-Language:en-US,en;q=0.9"')
+  } else if (platform === "instagram") {
+    ytDlpOptions.push("--merge-output-format mp4")
+  } else {
+    ytDlpOptions.push("--merge-output-format mp4")
+  }
+
+  const command = `yt-dlp ${ytDlpOptions.join(" ")} -o "${outputPath}" "${url}"`
+  console.log(`Выполняется команда: yt-dlp с качеством ${quality}p для платформы ${platform}`)
 
   try {
     const { stdout, stderr } = await execPromise(command, { timeout: 300000 })
@@ -248,6 +344,21 @@ async function downloadVideo(url, outputPath, quality = "720") {
     return true
   } catch (error) {
     console.error("Ошибка yt-dlp:", error)
+    throw error
+  }
+}
+
+// Упрощенная функция скачивания для проблемных платформ
+async function downloadVideoSimple(url, outputPath) {
+  const command = `yt-dlp --no-playlist -f "best" --no-check-certificate -o "${outputPath}" "${url}"`
+  console.log("Выполняется упрощенная команда yt-dlp")
+
+  try {
+    const { stdout, stderr } = await execPromise(command, { timeout: 300000 })
+    console.log("Упрощенное скачивание завершено успешно")
+    return true
+  } catch (error) {
+    console.error("Ошибка упрощенного скачивания:", error)
     throw error
   }
 }
@@ -527,7 +638,7 @@ async function handleVideoDownload(ctx, url, quality) {
       throw new Error(result.error || "Не удалось скачать видео")
     }
 
-    const { actualPath, sizeMB, quality: actualQuality, asDocument } = result
+    const { actualPath, sizeMB, quality: actualQuality, asDocument, platform } = result
 
     console.log(`Итоговый размер файла: ${sizeMB.toFixed(2)} МБ в качестве ${actualQuality}p`)
 
@@ -605,6 +716,10 @@ async function handleVideoDownload(ctx, url, quality) {
       errorMessage = "❌ Данный сайт не поддерживается."
     } else if (error.message.includes("размер")) {
       errorMessage = "❌ Видео слишком большое даже в минимальном качестве. Попробуйте извлечь аудио."
+    } else if (error.message.includes("TikTok") || error.message.includes("tiktok")) {
+      errorMessage = "❌ Проблема с TikTok видео. Попробуйте другую ссылку или извлеките аудио."
+    } else if (error.message.includes("format")) {
+      errorMessage = "❌ Запрошенный формат недоступен. Попробуйте другое качество или извлеките аудио."
     }
 
     ctx.reply(errorMessage, createMainMenu())
@@ -660,8 +775,16 @@ async function handleAudioExtraction(ctx, url) {
       console.log("Не удалось отредактировать сообщение")
     }
 
-    // Скачиваем видео в низком качестве для аудио
-    await downloadVideo(url, videoPath, "360")
+    // Скачиваем видео для аудио с учетом платформы
+    const platform = detectPlatform(url)
+
+    if (platform === "tiktok" || platform === "instagram") {
+      // Для TikTok и Instagram используем простое скачивание
+      await downloadVideoSimple(url, videoPath)
+    } else {
+      // Для остальных платформ используем качество 360p
+      await downloadVideo(url, videoPath, "360")
+    }
 
     // Ищем скачанный файл
     const files = fs.readdirSync(tempDir).filter((file) => file.startsWith(`video_${timestamp}`))
