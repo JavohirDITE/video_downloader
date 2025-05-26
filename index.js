@@ -7,8 +7,18 @@ const util = require("util")
 // Преобразуем exec в промис для удобства использования
 const execPromise = util.promisify(exec)
 
+// Проверяем наличие токена
+const BOT_TOKEN = process.env.BOT_TOKEN
+if (!BOT_TOKEN) {
+  console.error("❌ ОШИБКА: Переменная окружения BOT_TOKEN не установлена!")
+  console.error("Пожалуйста, установите BOT_TOKEN в настройках Railway или в файле .env")
+  process.exit(1)
+}
+
+console.log("✅ Токен бота найден, длина:", BOT_TOKEN.length)
+
 // Создаем экземпляр бота с токеном из переменных окружения
-const bot = new Telegraf(process.env.BOT_TOKEN)
+const bot = new Telegraf(BOT_TOKEN)
 
 // Создаем папки для временных файлов, если их нет
 const tempDir = path.join(__dirname, "temp")
@@ -338,9 +348,11 @@ bot
   .launch()
   .then(() => {
     console.log("✅ Бот успешно запущен!")
+    console.log("🔗 Имя бота:", bot.botInfo?.username || "неизвестно")
   })
   .catch((error) => {
     console.error("❌ Ошибка при запуске бота:", error)
+    process.exit(1)
   })
 
 // Graceful shutdown
