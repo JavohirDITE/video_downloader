@@ -58,6 +58,11 @@ const MAX_DOCUMENT_SIZE_MB = 2000 // 2 ГБ лимит Telegram
 const TARGET_SIZE_MB = 25 // Целевой размер для комфортной отправки
 const MAX_AUDIO_DURATION_FOR_RECOGNITION = 60 // Максимальная длительность аудио для распознавания (секунды)
 
+// Константы для музыкального поиска
+const ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
+const LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
+const LASTFM_API_KEY = process.env.LASTFM_API_KEY || "your_lastfm_api_key_here" // Опционально
+
 // Функция для очистки временных файлов
 function cleanupFiles(filePath) {
   try {
@@ -153,6 +158,140 @@ async function recognizeMusic(audioBuffer) {
     return response.data
   } catch (error) {
     console.error("Ошибка ACRCloud API:", error)
+    throw error
+  }
+}
+
+// Функция для поиска музыки через iTunes API
+async function searchMusicItunes(query, entity = "song", limit = 10) {
+  try {
+    const response = await axios.get(ITUNES_SEARCH_URL, {
+      params: {
+        term: query,
+        entity: entity,
+        limit: limit,
+        country: "US",
+        media: "music",
+      },
+      timeout: 10000,
+    })
+
+    return response.data.results || []
+  } catch (error) {
+    console.error("Ошибка поиска iTunes:", error)
+    throw error
+  }
+}
+
+// Функция поиска популярных треков исполнителя через Last.fm (если API ключ доступен)
+async function searchArtistTopTracks(artist, limit = 10) {
+  if (!LASTFM_API_KEY || LASTFM_API_KEY === "your_lastfm_api_key_here") {
+    // Если нет Last.fm API, используем iTunes
+    return await searchMusicItunes(`${artist}`, "song", limit)
+  }
+
+  try {
+    const response = await axios.get(LASTFM_API_URL, {
+      params: {
+        method: "artist.gettoptracks",
+        artist: artist,
+        api_key: LASTFM_API_KEY,
+        format: "json",
+        limit: limit,
+      },
+      timeout: 10000,
+    })
+
+    if (response.data.toptracks && response.data.toptracks.track) {
+      return response.data.toptracks.track.map((track) => ({
+        trackName: track.name,
+        artistName: track.artist.name,
+        playcount: track.playcount,
+        url: track.url,
+      }))
+    }
+
+    return []
+  } catch (error) {
+    console.error("Ошибка поиска Last.fm:", error)
+    // Fallback на iTunes
+    return await searchMusicItunes(`${artist}`, "song", limit)
+  }
+}
+
+// Функция для форматирования результатов поиска
+function formatSearchResults(results, searchType) {
+  if (!results || results.length === 0) {
+    return "❌ Ничего не найдено. Попробуйте изменить запрос."
+  }
+
+  let message = `🎵 Найдено ${results.length} результатов:\n\n`
+
+  results.slice(0, 8).forEach((result, index) => {
+    if (result.trackName || result.trackCensoredName) {
+      // iTunes результат
+      const trackName = result.trackName || result.trackCensoredName || "Неизвестный трек"
+      const artistName = result.artistName || "Неизвестный исполнитель"
+      const albumName = result.collectionName || "Неизвестный альбом"
+      const releaseDate = result.releaseDate ? new Date(result.releaseDate).getFullYear() : "Неизвестно"
+      const duration = result.trackTimeMillis
+        ? `${Math.floor(result.trackTimeMillis / 60000)}:${Math.floor((result.trackTimeMillis % 60000) / 1000)
+            .toString()
+            .padStart(2, "0")}`
+        : "Неизвестно"
+
+      message += `${index + 1}. 🎵 **${trackName}**\n`
+      message += `   👤 ${artistName}\n`
+      message += `   💿 ${albumName} (${releaseDate})\n`
+      message += `   ⏱ ${duration}\n`
+
+      if (result.trackViewUrl) {
+        message += `   🔗 [iTunes](${result.trackViewUrl})\n`
+      }
+      if (result.previewUrl) {
+        message += `   🎧 [Превью 30сек](${result.previewUrl})\n`
+      }
+      message += `\n`
+    } else if (result.playcount) {
+      // Last.fm результат
+      message += `${index + 1}. 🎵 **${result.trackName}**\n`
+      message += `   👤 ${result.artistName}\n`
+      message += `   📊 Прослушиваний: ${Number.parseInt(result.playcount).toLocaleString()}\n`
+      if (result.url) {
+        message += `   🔗 [Last.fm](${result.url})\n`
+      }
+      message += `\n`
+    }
+  })
+
+  if (results.length > 8) {
+    message += `... и еще ${results.length - 8} результатов\n\n`
+  }
+
+  message += `💡 Совет: Для более точного поиска используйте формат "Исполнитель - Название"`
+
+  return message
+}
+
+// Функция получения популярных треков
+async function getPopularTracks() {
+  try {
+    // Поиск популярных треков разных жанров
+    const genres = ["pop", "rock", "hip-hop", "electronic", "indie"]
+    const randomGenre = genres[Math.floor(Math.random() * genres.length)]
+
+    const results = await searchMusicItunes(randomGenre, "song", 15)
+
+    // Сортируем по популярности (если есть данные)
+    const sortedResults = results.sort((a, b) => {
+      const aPopularity = a.trackPrice || 0
+      const bPopularity = b.trackPrice || 0
+      return bPopularity - aPopularity
+    })
+
+    return sortedResults.slice(0, 10)
+  } catch (error) {
+    console.error("Ошибка получения популярных треков:", error)
     throw error
   }
 }
@@ -468,9 +607,10 @@ async function extractAudio(videoPath, audioPath) {
 // Создание главного меню с обычными кнопками
 function createMainMenu() {
   return Markup.keyboard([
-    ["📥 Скачать видео", "🎵 Извлечь аудио"],
-    ["🎶 Распознать музыку", "ℹ️ Информация о видео"],
-    ["⚙️ Настройки качества", "❓ Помощь"],
+    ["📥 Скачать видео", "🎵 Из��лечь аудио"],
+    ["🎶 Распознать музыку", "🔍 Поиск музыки"],
+    ["ℹ️ Информация о видео", "❓ Помощь"],
+    ["⚙️ Настройки качества"],
   ]).resize()
 }
 
@@ -483,9 +623,20 @@ function createQualityMenu() {
   ]).resize()
 }
 
+// Создание меню поиска музыки
+function createMusicSearchMenu() {
+  return Markup.keyboard([
+    ["🎤 Поиск по исполнителю", "🎵 Поиск по названию"],
+    ["🎼 Поиск по исполнителю + название", "🔥 Популярные треки"],
+    ["🏠 Главное меню"],
+  ]).resize()
+}
+
 // Команда /start - приветствие с меню
 bot.start((ctx) => {
-  const musicFeature = ACRCLOUD_CONFIG.access_key ? "• 🎶 Распознавание музыки как в Shazam" : ""
+  const musicFeature = ACRCLOUD_CONFIG.access_key
+    ? "• 🎶 Распознавание музыки как в Shazam\n• 🔍 Поиск музыки по исполнителю и названию"
+    : "• 🔍 Поиск музыки по исполнителю и названию"
 
   const welcomeMessage = `
 🎬 Добро пожаловать в многофункциональный бот!
@@ -512,8 +663,19 @@ bot.command("help", (ctx) => {
 🎶 Распознавание музыки:
 • Нажмите "🎶 Распознать музыку"
 • Отправьте голосовое сообщение или аудиофайл
-• Получите название трека и исполнителя`
-    : ""
+• Получите название трека и исполнителя
+
+🔍 Поиск музыки:
+• 🎤 Поиск по исполнителю - все песни артиста
+• 🎵 Поиск по названию - найти конкретную песню  
+• 🎼 Комбинированный поиск - исполнитель + название
+• 🔥 Популярные треки - актуальные хиты`
+    : `
+🔍 Поиск музыки:
+• 🎤 Поиск по исполнителю - все песни артиста
+• 🎵 Поиск по названию - найти конкретную песню  
+• 🎼 Комбинированный поиск - исполнитель + название
+• 🔥 Популярные треки - актуальные хиты`
 
   const helpMessage = `
 📖 Подробная справка:
@@ -570,7 +732,7 @@ bot.on("voice", async (ctx) => {
 // Обработка аудиофайлов
 bot.on("audio", async (ctx) => {
   if (!ACRCLOUD_CONFIG.access_key) {
-    return ctx.reply("❌ Функция распознавания музыки не настроен��.", createMainMenu())
+    return ctx.reply("❌ Функция распознавания музыки не настроена.", createMainMenu())
   }
 
   const session = userSessions.get(ctx.from.id) || {}
@@ -633,6 +795,72 @@ bot.on("text", async (ctx) => {
     return
   }
 
+  if (text === "🔍 Поиск музыки") {
+    ctx.reply(
+      "🔍 Выберите тип поиска музыки:\n\n" +
+        "🎤 **Поиск по исполнителю** - найти все песни артиста\n" +
+        "🎵 **Поиск по названию** - найти конкретную песню\n" +
+        "🎼 **Комбинированный поиск** - исполнитель + название\n" +
+        "🔥 **Популярные треки** - актуальные хиты\n\n" +
+        "💡 Примеры запросов:\n" +
+        "• По исполнителю: `Billie Eilish`\n" +
+        "• По названию: `Shape of You`\n" +
+        "• Комбинированный: `Ed Sheeran - Perfect`",
+      createMusicSearchMenu(),
+    )
+    return
+  }
+
+  if (text === "🎤 Поиск по исполнителю") {
+    ctx.reply(
+      "🎤 Поиск по исполнителю активирован!\n\n" +
+        "Отправьте имя исполнителя для поиска его популярных треков.\n\n" +
+        "💡 Примеры:\n" +
+        "• `Billie Eilish`\n" +
+        "• `The Weeknd`\n" +
+        "• `Моргенштерн`\n" +
+        "• `Дима Билан`",
+      createMainMenu(),
+    )
+    userSessions.set(userId, { ...session, action: "search_by_artist" })
+    return
+  }
+
+  if (text === "🎵 Поиск по названию") {
+    ctx.reply(
+      "🎵 Поиск по названию трека активирован!\n\n" +
+        "Отправьте название песни для поиска.\n\n" +
+        "💡 Примеры:\n" +
+        "• `Shape of You`\n" +
+        "• `Bad Guy`\n" +
+        "• `Мокрые кроссы`\n" +
+        "• `Деспасито`",
+      createMainMenu(),
+    )
+    userSessions.set(userId, { ...session, action: "search_by_title" })
+    return
+  }
+
+  if (text === "🎼 Поиск по исполнителю + название") {
+    ctx.reply(
+      "🎼 Комбинированный поиск активирован!\n\n" +
+        "Отправьте запрос в формате: `Исполнитель - Название`\n\n" +
+        "💡 Примеры:\n" +
+        "• `Ed Sheeran - Perfect`\n" +
+        "• `Billie Eilish - Bad Guy`\n" +
+        "• `Моргенштерн - Cadillac`\n" +
+        "• `The Weeknd - Blinding Lights`",
+      createMainMenu(),
+    )
+    userSessions.set(userId, { ...session, action: "search_combined" })
+    return
+  }
+
+  if (text === "🔥 Популярные треки") {
+    await handlePopularTracks(ctx)
+    return
+  }
+
   if (text === "ℹ️ Информация о видео") {
     ctx.reply(
       "ℹ️ Режим получения информации активирован!\n\n" + "Отправьте ссылку на видео для получения подробной информации.",
@@ -648,8 +876,19 @@ bot.on("text", async (ctx) => {
 🎶 <b>Распознавание музыки:</b>
 • Нажмите "🎶 Распознать музыку"
 • Отправьте голосовое сообщение или аудиофайл
-• Получите название и исполнителя`
-      : ""
+• Получите название и исполнителя
+
+🔍 <b>Поиск музыки:</b>
+• 🎤 По исполнителю - все песни артиста
+• 🎵 По названию - найти конкретную песню  
+• 🎼 Комбинированный - исполнитель + название
+• 🔥 Популярные треки`
+      : `
+🔍 <b>Поиск музыки:</b>
+• 🎤 По исполнителю - все песни артиста
+• 🎵 По названию - найти конкретную песню  
+• 🎼 Комбинированный - исполнитель + название
+• 🔥 Популярные треки`
 
     return ctx.replyWithHTML(
       `
@@ -734,6 +973,22 @@ YouTube, TikTok, Instagram, Twitter, Facebook, VK и 1000+ других!`,
     return ctx.reply("❌ Неизвестная команда. Используйте /start для начала работы.", createMainMenu())
   }
 
+  // Обработка поисковых запросов
+  if (session.action === "search_by_artist") {
+    await handleMusicSearch(ctx, text, "artist")
+    return
+  }
+
+  if (session.action === "search_by_title") {
+    await handleMusicSearch(ctx, text, "title")
+    return
+  }
+
+  if (session.action === "search_combined") {
+    await handleMusicSearch(ctx, text, "combined")
+    return
+  }
+
   // Проверяем, является ли текст ссылкой
   if (!isValidUrl(text)) {
     return ctx.reply(
@@ -754,6 +1009,107 @@ YouTube, TikTok, Instagram, Twitter, Facebook, VK и 1000+ других!`,
     ctx.reply("💡 Я вижу ссылку на видео! Выберите действие в меню:", createMainMenu())
   }
 })
+
+// Функция обработки поиска музыки
+async function handleMusicSearch(ctx, query, searchType) {
+  let processingMessage
+  try {
+    processingMessage = await ctx.reply("🔍 Ищу музыку... Это может занять до 10 секунд.")
+  } catch (error) {
+    console.error("Ошибка при отправке сообщения:", error)
+    return
+  }
+
+  try {
+    let results = []
+
+    switch (searchType) {
+      case "artist":
+        // Поиск по исполнителю
+        results = await searchArtistTopTracks(query, 10)
+        break
+
+      case "title":
+        // Поиск по названию
+        results = await searchMusicItunes(query, "song", 10)
+        break
+
+      case "combined":
+        // Комбинированный поиск
+        results = await searchMusicItunes(query, "song", 10)
+        break
+
+      default:
+        results = await searchMusicItunes(query, "song", 10)
+    }
+
+    const formattedResults = formatSearchResults(results, searchType)
+
+    await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, formattedResults, {
+      reply_markup: createMainMenu().reply_markup,
+      parse_mode: "Markdown",
+      disable_web_page_preview: true,
+    })
+
+    // Сбрасываем сессию после поиска
+    userSessions.delete(ctx.from.id)
+  } catch (error) {
+    console.error("Ошибка при поиске музыки:", error)
+
+    let errorMessage = "❌ Произошла ошибка при поиске музыки."
+
+    if (error.message.includes("timeout")) {
+      errorMessage = "❌ Превышено время ожидания. Попробуйте еще раз."
+    } else if (error.message.includes("network")) {
+      errorMessage = "❌ Проблема с сетью. Попробуйте позже."
+    }
+
+    try {
+      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage, {
+        reply_markup: createMainMenu().reply_markup,
+      })
+    } catch (editError) {
+      ctx.reply(errorMessage, createMainMenu())
+    }
+
+    // Сбрасываем сессию при ошибке
+    userSessions.delete(ctx.from.id)
+  }
+}
+
+// Функция обработки популярных треков
+async function handlePopularTracks(ctx) {
+  let processingMessage
+  try {
+    processingMessage = await ctx.reply("🔥 Загружаю популярные треки...")
+  } catch (error) {
+    console.error("Ошибка при отправке сообщения:", error)
+    return
+  }
+
+  try {
+    const results = await getPopularTracks()
+    const formattedResults = formatSearchResults(results, "popular")
+
+    await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, formattedResults, {
+      reply_markup: createMainMenu().reply_markup,
+      parse_mode: "Markdown",
+      disable_web_page_preview: true,
+    })
+  } catch (error) {
+    console.error("Ошибка при получении популярных треков:", error)
+
+    const errorMessage = "❌ Не удалось загрузить популярные треки. Попробуйте позже."
+
+    try {
+      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage, {
+        reply_markup: createMainMenu().reply_markup,
+      })
+    } catch (editError) {
+      ctx.reply(errorMessage, createMainMenu())
+    }
+  }
+}
 
 // Функция обработки распознавания музыки
 async function handleMusicRecognition(ctx, type) {
@@ -879,6 +1235,7 @@ ${score >= 80 ? "✅ Высокая точность распознавания"
 
       await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, resultMessage, {
         reply_markup: createMainMenu().reply_markup,
+        parse_mode: "Markdown",
       })
 
       // Если есть внешние ссылки, добавляем их
@@ -926,6 +1283,9 @@ ${score >= 80 ? "✅ Высокая точность распознавания"
         reply_markup: createMainMenu().reply_markup,
       })
     }
+
+    // Сбрасываем сессию после распознавания
+    userSessions.delete(ctx.from.id)
   } catch (error) {
     console.error("Ошибка при распознавании музыки:", error)
 
@@ -946,6 +1306,9 @@ ${score >= 80 ? "✅ Высокая точность распознавания"
     } catch (editError) {
       ctx.reply(errorMessage, createMainMenu())
     }
+
+    // Сбрасываем сессию при ошибке
+    userSessions.delete(ctx.from.id)
   }
 }
 
@@ -1303,6 +1666,7 @@ ${availableQualities.length > 0 ? `📊 ${availableQualities[0]}` : ""}${sizeEst
 
     await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, infoMessage, {
       reply_markup: createMainMenu().reply_markup,
+      parse_mode: "Markdown",
     })
   } catch (error) {
     console.error("Ошибка при получении информации:", error)
@@ -1355,7 +1719,7 @@ app.use(express.json())
 
 // Health check endpoint
 app.get("/", (req, res) => {
-  res.send("🤖 Multi-functional Telegram Bot with Music Recognition is running!")
+  res.send("🤖 Multi-functional Telegram Bot with Music Recognition and Search is running!")
 })
 
 // Webhook endpoint
