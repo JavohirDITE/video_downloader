@@ -227,20 +227,27 @@ function formatSearchResults(results, searchType) {
 
   let message = `🎵 Найдено ${results.length} результатов:\n\n`
 
-  results.slice(0, 8).forEach((result, index) => {
+  // Берем только первые 8 результатов и правильно их нумеруем
+  const limitedResults = results.slice(0, 8)
+
+  limitedResults.forEach((result, index) => {
+    const number = index + 1
+
     if (result.trackName || result.trackCensoredName) {
       // iTunes результат
       const trackName = result.trackName || result.trackCensoredName || "Неизвестный трек"
       const artistName = result.artistName || "Неизвестный исполнитель"
       const albumName = result.collectionName || "Неизвестный альбом"
       const releaseDate = result.releaseDate ? new Date(result.releaseDate).getFullYear() : "Неизвестно"
-      const duration = result.trackTimeMillis
-        ? `${Math.floor(result.trackTimeMillis / 60000)}:${Math.floor((result.trackTimeMillis % 60000) / 1000)
-            .toString()
-            .padStart(2, "0")}`
-        : "Неизвестно"
 
-      message += `${index + 1}. 🎵 **${trackName}**\n`
+      let duration = "Неизвестно"
+      if (result.trackTimeMillis) {
+        const minutes = Math.floor(result.trackTimeMillis / 60000)
+        const seconds = Math.floor((result.trackTimeMillis % 60000) / 1000)
+        duration = `${minutes}:${seconds.toString().padStart(2, "0")}`
+      }
+
+      message += `${number}. 🎵 **${trackName}**\n`
       message += `   👤 ${artistName}\n`
       message += `   💿 ${albumName} (${releaseDate})\n`
       message += `   ⏱ ${duration}\n`
@@ -254,7 +261,7 @@ function formatSearchResults(results, searchType) {
       message += `\n`
     } else if (result.playcount) {
       // Last.fm результат
-      message += `${index + 1}. 🎵 **${result.trackName}**\n`
+      message += `${number}. 🎵 **${result.trackName}**\n`
       message += `   👤 ${result.artistName}\n`
       message += `   📊 Прослушиваний: ${Number.parseInt(result.playcount).toLocaleString()}\n`
       if (result.url) {
@@ -277,19 +284,22 @@ function formatSearchResults(results, searchType) {
 async function getPopularTracks() {
   try {
     // Поиск популярных треков разных жанров
-    const genres = ["pop", "rock", "hip-hop", "electronic", "indie"]
+    const genres = ["pop", "rock", "hip-hop", "electronic", "indie", "country", "r&b"]
     const randomGenre = genres[Math.floor(Math.random() * genres.length)]
 
-    const results = await searchMusicItunes(randomGenre, "song", 15)
+    const results = await searchMusicItunes(randomGenre, "song", 20)
 
-    // Сортируем по популярности (если есть данные)
-    const sortedResults = results.sort((a, b) => {
-      const aPopularity = a.trackPrice || 0
-      const bPopularity = b.trackPrice || 0
-      return bPopularity - aPopularity
-    })
+    // Фильтруем и сортируем результаты
+    const filteredResults = results
+      .filter((track) => track.trackName && track.artistName) // Убираем треки без названия
+      .sort((a, b) => {
+        // Сортируем по популярности (используем разные метрики)
+        const aScore = (a.trackPrice || 0) + (a.collectionPrice || 0)
+        const bScore = (b.trackPrice || 0) + (b.collectionPrice || 0)
+        return bScore - aScore
+      })
 
-    return sortedResults.slice(0, 10)
+    return filteredResults.slice(0, 10)
   } catch (error) {
     console.error("Ошибка получения популярных треков:", error)
     throw error
@@ -607,7 +617,7 @@ async function extractAudio(videoPath, audioPath) {
 // Создание главного меню с обычными кнопками
 function createMainMenu() {
   return Markup.keyboard([
-    ["📥 Скачать видео", "🎵 Из��лечь аудио"],
+    ["📥 Скачать видео", "🎵 Извлечь аудио"],
     ["🎶 Распознать музыку", "🔍 Поиск музыки"],
     ["ℹ️ Информация о видео", "❓ Помощь"],
     ["⚙️ Настройки качества"],
@@ -1023,24 +1033,31 @@ async function handleMusicSearch(ctx, query, searchType) {
   try {
     let results = []
 
+    // Очищаем запрос от лишних символов
+    const cleanQuery = query.trim().replace(/[^\w\s-]/g, "")
+
+    if (!cleanQuery) {
+      throw new Error("Пустой запрос")
+    }
+
     switch (searchType) {
       case "artist":
         // Поиск по исполнителю
-        results = await searchArtistTopTracks(query, 10)
+        results = await searchArtistTopTracks(cleanQuery, 10)
         break
 
       case "title":
         // Поиск по названию
-        results = await searchMusicItunes(query, "song", 10)
+        results = await searchMusicItunes(cleanQuery, "song", 10)
         break
 
       case "combined":
         // Комбинированный поиск
-        results = await searchMusicItunes(query, "song", 10)
+        results = await searchMusicItunes(cleanQuery, "song", 10)
         break
 
       default:
-        results = await searchMusicItunes(query, "song", 10)
+        results = await searchMusicItunes(cleanQuery, "song", 10)
     }
 
     const formattedResults = formatSearchResults(results, searchType)
@@ -1062,6 +1079,8 @@ async function handleMusicSearch(ctx, query, searchType) {
       errorMessage = "❌ Превышено время ожидания. Попробуйте еще раз."
     } else if (error.message.includes("network")) {
       errorMessage = "❌ Проблема с сетью. Попробуйте позже."
+    } else if (error.message.includes("Пустой запрос")) {
+      errorMessage = "❌ Введите корректный поисковый запрос."
     }
 
     try {
