@@ -1,13 +1,26 @@
 {
-  "name": "telegram-video-downloader-bot",
-  "version": "1.0.0",
-  "description": "Telegram бот для скачивания видео и аудио с различных платформ",
+  "name": "telegram-video-downloader-bot-improved",
+  "version": "2.0.0",
+  "description": "Улучшенный Telegram бот для скачивания видео с кнопками и выбором качества",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
-  "keywords": ["telegram", "bot", "video", "downloader", "youtube", "tiktok", "instagram", "yt-dlp", "ffmpeg"],
+  "keywords": [
+    "telegram",
+    "bot",
+    "video",
+    "downloader",
+    "youtube",
+    "tiktok",
+    "instagram",
+    "yt-dlp",
+    "ffmpeg",
+    "interactive",
+    "buttons",
+    "quality"
+  ],
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
