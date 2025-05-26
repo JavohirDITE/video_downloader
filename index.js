@@ -219,13 +219,67 @@ async function searchArtistTopTracks(artist, limit = 10) {
   }
 }
 
-// Функция для форматирования результатов поиска
+// Функция поиска музыки на YouTube
+async function searchYouTubeMusic(query, limit = 5) {
+  try {
+    const searchQuery = `ytsearch${limit}:"${query}" music audio`
+    const command = `yt-dlp --dump-json --no-playlist "${searchQuery}"`
+
+    console.log(`Поиск на YouTube: ${query}`)
+
+    const { stdout } = await execPromise(command, { timeout: 30000 })
+    const lines = stdout.trim().split("\n")
+    const results = []
+
+    for (const line of lines) {
+      try {
+        const video = JSON.parse(line)
+        if (video.duration && video.duration < 600) {
+          // Только треки до 10 минут
+          results.push({
+            id: video.id,
+            title: video.title,
+            uploader: video.uploader || video.channel || "Неизвестно",
+            duration: video.duration,
+            url: video.webpage_url,
+            thumbnail: video.thumbnail,
+          })
+        }
+      } catch (parseError) {
+        console.error("Ошибка парсинга JSON:", parseError)
+      }
+    }
+
+    return results
+  } catch (error) {
+    console.error("Ошибка поиска YouTube:", error)
+    return []
+  }
+}
+
+// Функция скачивания MP3 с YouTube
+async function downloadMP3FromYouTube(url, outputPath) {
+  try {
+    const command = `yt-dlp -x --audio-format mp3 --audio-quality 128K --no-playlist -o "${outputPath}" "${url}"`
+    console.log(`Скачиваем MP3: ${url}`)
+
+    const { stdout, stderr } = await execPromise(command, { timeout: 180000 })
+    console.log("MP3 скачан успешно")
+    return true
+  } catch (error) {
+    console.error("Ошибка скачивания MP3:", error)
+    throw error
+  }
+}
+
+// Функция для форматирования результатов поиска с кнопками скачивания
 function formatSearchResults(results, searchType) {
   if (!results || results.length === 0) {
-    return "❌ Ничего не найдено. Попробуйте изменить запрос."
+    return { message: "❌ Ничего не найдено. Попробуйте изменить запрос.", keyboard: null }
   }
 
   let message = `🎵 Найдено ${results.length} результатов:\n\n`
+  const buttons = []
 
   // Берем только первые 8 результатов и правильно их нумеруем
   const limitedResults = results.slice(0, 8)
@@ -259,6 +313,14 @@ function formatSearchResults(results, searchType) {
         message += `   🎧 [Превью 30сек](${result.previewUrl})\n`
       }
       message += `\n`
+
+      // Добавляем кнопку скачивания
+      buttons.push([
+        Markup.button.callback(
+          `📥 Скачать "${trackName.substring(0, 20)}..."`,
+          `download_${Buffer.from(`${artistName} - ${trackName}`).toString("base64").substring(0, 50)}`,
+        ),
+      ])
     } else if (result.playcount) {
       // Last.fm результат
       message += `${number}. 🎵 **${result.trackName}**\n`
@@ -268,6 +330,14 @@ function formatSearchResults(results, searchType) {
         message += `   🔗 [Last.fm](${result.url})\n`
       }
       message += `\n`
+
+      // Добавляем кнопку скачивания
+      buttons.push([
+        Markup.button.callback(
+          `📥 Скачать "${result.trackName.substring(0, 20)}..."`,
+          `download_${Buffer.from(`${result.artistName} - ${result.trackName}`).toString("base64").substring(0, 50)}`,
+        ),
+      ])
     }
   })
 
@@ -277,7 +347,9 @@ function formatSearchResults(results, searchType) {
 
   message += `💡 Совет: Для более точного поиска используйте формат "Исполнитель - Название"`
 
-  return message
+  const keyboard = buttons.length > 0 ? Markup.inlineKeyboard(buttons) : null
+
+  return { message, keyboard }
 }
 
 // Функция получения популярных треков
@@ -645,8 +717,8 @@ function createMusicSearchMenu() {
 // Команда /start - приветствие с меню
 bot.start((ctx) => {
   const musicFeature = ACRCLOUD_CONFIG.access_key
-    ? "• 🎶 Распознавание музыки как в Shazam\n• 🔍 Поиск музыки по исполнителю и названию"
-    : "• 🔍 Поиск музыки по исполнителю и названию"
+    ? "• 🎶 Распознавание музыки как в Shazam\n• 🔍 Поиск музыки по исполнителю и названию\n• 📥 Автоматическое скачивание MP3"
+    : "• 🔍 Поиск музыки по исполнителю и названию\n• 📥 Автоматическое скачивание MP3"
 
   const welcomeMessage = `
 🎬 Добро пожаловать в многофункциональный бот!
@@ -674,25 +746,28 @@ bot.command("help", (ctx) => {
 • Нажмите "🎶 Распознать музыку"
 • Отправьте голосовое сообщение или аудиофайл
 • Получите название трека и исполнителя
+• Автоматически скачайте MP3
 
 🔍 Поиск музыки:
 • 🎤 Поиск по исполнителю - все песни артиста
 • 🎵 Поиск по названию - найти конкретную песню  
 • 🎼 Комбинированный поиск - исполнитель + название
-• 🔥 Популярные треки - актуальные хиты`
+• 🔥 Популярные треки - актуальные хиты
+• 📥 Кнопки скачивания MP3 для каждого трека`
     : `
 🔍 Поиск музыки:
 • 🎤 Поиск по исполнителю - все песни артиста
 • 🎵 Поиск по названию - найти конкретную песню  
 • 🎼 Комбинированный поиск - исполнитель + название
-• 🔥 Популярные треки - актуальные хиты`
+• 🔥 Популярные треки - актуальные хиты
+• 📥 Кнопки скачивания MP3 для каждого трека`
 
   const helpMessage = `
 📖 Подробная справка:
 
 🎥 Скачивание видео:
 • Нажмите "📥 Скачать видео"
-• Выберите качество в настройках
+• Выберите качес��во в настройках
 • Отправьте ссылку на видео
 
 🎵 Извлечение аудио:
@@ -719,6 +794,136 @@ YouTube, TikTok, Instagram, Twitter, Facebook, VK и многие другие!`
 
   ctx.reply(helpMessage, createMainMenu())
 })
+
+// Обработка callback запросов (кнопки скачивания)
+bot.on("callback_query", async (ctx) => {
+  const callbackData = ctx.callbackQuery.data
+
+  if (callbackData.startsWith("download_")) {
+    const encodedQuery = callbackData.replace("download_", "")
+    try {
+      const query = Buffer.from(encodedQuery, "base64").toString("utf-8")
+      await handleMP3Download(ctx, query)
+    } catch (error) {
+      console.error("Ошибка декодирования запроса:", error)
+      await ctx.answerCbQuery("❌ Ошибка обработки запроса")
+    }
+  }
+})
+
+// Функция скачивания MP3
+async function handleMP3Download(ctx, query) {
+  let processingMessage
+
+  try {
+    await ctx.answerCbQuery("🎵 Начинаю поиск и скачивание...")
+    processingMessage = await ctx.reply(`🔍 Ищу "${query}" на YouTube...`)
+
+    // Ищем трек на YouTube
+    const youtubeResults = await searchYouTubeMusic(query, 1)
+
+    if (youtubeResults.length === 0) {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        processingMessage.message_id,
+        null,
+        `❌ Не удалось найти "${query}" на YouTube`,
+      )
+      return
+    }
+
+    const track = youtubeResults[0]
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      processingMessage.message_id,
+      null,
+      `📥 Скачиваю: ${track.title}\n⏱ Длительность: ${Math.floor(track.duration / 60)}:${(track.duration % 60).toString().padStart(2, "0")}`,
+    )
+
+    // Скачиваем MP3
+    const timestamp = Date.now()
+    const outputPath = path.join(tempDir, `music_${timestamp}.%(ext)s`)
+
+    await downloadMP3FromYouTube(track.url, outputPath)
+
+    // Ищем скачанный файл
+    const files = fs.readdirSync(tempDir).filter((file) => file.startsWith(`music_${timestamp}`))
+
+    if (files.length === 0) {
+      throw new Error("Файл не найден после скачивания")
+    }
+
+    const actualPath = path.join(tempDir, files[0])
+    const stats = fs.statSync(actualPath)
+    const sizeMB = stats.size / (1024 * 1024)
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      processingMessage.message_id,
+      null,
+      `📤 Отправляю MP3...\n💾 Размер: ${sizeMB.toFixed(2)} МБ`,
+    )
+
+    // Создаем имя файла
+    const cleanTitle = track.title
+      .replace(/[^\w\s-]/g, "")
+      .replace(/\s+/g, "_")
+      .substring(0, 50)
+
+    const caption = `🎵 ${track.title}\n👤 ${track.uploader}\n💾 ${sizeMB.toFixed(2)} МБ • 128 kbps MP3`
+
+    // Отправляем аудио
+    if (sizeMB <= 50) {
+      await ctx.replyWithAudio(
+        { source: actualPath },
+        {
+          caption,
+          title: track.title,
+          performer: track.uploader,
+          reply_markup: createMainMenu().reply_markup,
+        },
+      )
+    } else {
+      await ctx.replyWithDocument(
+        {
+          source: actualPath,
+          filename: `${cleanTitle}.mp3`,
+        },
+        {
+          caption: caption + "\n\n💡 Отправлено как документ из-за размера",
+          reply_markup: createMainMenu().reply_markup,
+        },
+      )
+    }
+
+    // Удаляем временный файл
+    cleanupFiles(actualPath)
+
+    // Удаляем сообщение о процессе
+    try {
+      await ctx.deleteMessage(processingMessage.message_id)
+    } catch (deleteError) {
+      console.log("Не удалось удалить сообщение о процессе")
+    }
+  } catch (error) {
+    console.error("Ошибка скачивания MP3:", error)
+
+    let errorMessage = "❌ Произошла ошибка при скачивании MP3."
+
+    if (error.message.includes("Video unavailable")) {
+      errorMessage = "❌ Видео недоступно на YouTube."
+    } else if (error.message.includes("timeout")) {
+      errorMessage = "❌ Превышено время ожидания."
+    }
+
+    if (processingMessage) {
+      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage)
+    } else {
+      await ctx.reply(errorMessage)
+    }
+  }
+}
 
 // Обработка голосовых сообщений
 bot.on("voice", async (ctx) => {
@@ -797,6 +1002,7 @@ bot.on("text", async (ctx) => {
       "🎶 Режим распознавания музыки активирован!\n\n" +
         "📱 Отправьте голосовое сообщение или аудиофайл\n" +
         "🎵 Я определю название трека и исполнителя\n" +
+        "📥 Автоматически предложу скачать MP3\n" +
         "⏱ Максимальная длительность: 60 секунд\n\n" +
         "💡 Для лучшего результата используйте качественную запись без шумов.",
       createMainMenu(),
@@ -815,7 +1021,8 @@ bot.on("text", async (ctx) => {
         "💡 Примеры запросов:\n" +
         "• По исполнителю: `Billie Eilish`\n" +
         "• По названию: `Shape of You`\n" +
-        "• Комбинированный: `Ed Sheeran - Perfect`",
+        "• Комбинированный: `Ed Sheeran - Perfect`\n\n" +
+        "📥 У каждого результата будет кнопка скачивания MP3!",
       createMusicSearchMenu(),
     )
     return
@@ -829,7 +1036,8 @@ bot.on("text", async (ctx) => {
         "• `Billie Eilish`\n" +
         "• `The Weeknd`\n" +
         "• `Моргенштерн`\n" +
-        "• `Дима Билан`",
+        "• `Дима Билан`\n\n" +
+        "📥 Каждый результат будет с кнопкой скачивания MP3!",
       createMainMenu(),
     )
     userSessions.set(userId, { ...session, action: "search_by_artist" })
@@ -844,7 +1052,8 @@ bot.on("text", async (ctx) => {
         "• `Shape of You`\n" +
         "• `Bad Guy`\n" +
         "• `Мокрые кроссы`\n" +
-        "• `Деспасито`",
+        "• `Деспасито`\n\n" +
+        "📥 Каждый результат будет с кнопкой скачивания MP3!",
       createMainMenu(),
     )
     userSessions.set(userId, { ...session, action: "search_by_title" })
@@ -859,7 +1068,8 @@ bot.on("text", async (ctx) => {
         "• `Ed Sheeran - Perfect`\n" +
         "• `Billie Eilish - Bad Guy`\n" +
         "• `Моргенштерн - Cadillac`\n" +
-        "• `The Weeknd - Blinding Lights`",
+        "• `The Weeknd - Blinding Lights`\n\n" +
+        "📥 Каждый результат будет с кнопкой скачивания MP3!",
       createMainMenu(),
     )
     userSessions.set(userId, { ...session, action: "search_combined" })
@@ -887,18 +1097,21 @@ bot.on("text", async (ctx) => {
 • Нажмите "🎶 Распознать музыку"
 • Отправьте голосовое сообщение или аудиофайл
 • Получите название и исполнителя
+• Автоматически скачайте MP3
 
 🔍 <b>Поиск музыки:</b>
 • 🎤 По исполнителю - все песни артиста
 • 🎵 По названию - найти конкретную песню  
 • 🎼 Комбинированный - исполнитель + название
-• 🔥 Популярные треки`
+• 🔥 Популярные треки
+• 📥 Кнопки скачивания MP3`
       : `
 🔍 <b>Поиск музыки:</b>
 • 🎤 По исполнителю - все песни артиста
 • 🎵 По названию - найти конкретную песню  
 • 🎼 Комбинированный - исполнитель + название
-• 🔥 Популярные треки`
+• 🔥 Популярные треки
+• 📥 Кнопки скачивания MP3`
 
     return ctx.replyWithHTML(
       `
@@ -945,7 +1158,7 @@ YouTube, TikTok, Instagram, Twitter, Facebook, VK и 1000+ других!`,
     return
   }
 
-  // Обработка выбора каче��тва
+  // Обработка выбора качества
   if (text.includes("1080p")) {
     userSessions.set(userId, { ...session, quality: "1080" })
     ctx.reply("✅ Установлено качество: 1080p (будет понижено если файл большой)", createMainMenu())
@@ -1060,12 +1273,17 @@ async function handleMusicSearch(ctx, query, searchType) {
         results = await searchMusicItunes(cleanQuery, "song", 10)
     }
 
-    const formattedResults = formatSearchResults(results, searchType)
+    const { message, keyboard } = formatSearchResults(results, searchType)
 
-    await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, formattedResults, {
+    await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, message, {
       parse_mode: "Markdown",
       disable_web_page_preview: true,
     })
+
+    // Отправляем кнопки скачивания, если есть
+    if (keyboard) {
+      await ctx.reply("📥 Выберите трек для скачивания:", keyboard)
+    }
 
     // Отправляем новое сообщение с меню
     await ctx.reply("Выберите действие:", createMainMenu())
@@ -1105,12 +1323,17 @@ async function handlePopularTracks(ctx) {
 
   try {
     const results = await getPopularTracks()
-    const formattedResults = formatSearchResults(results, "popular")
+    const { message, keyboard } = formatSearchResults(results, "popular")
 
-    await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, formattedResults, {
+    await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, message, {
       parse_mode: "Markdown",
       disable_web_page_preview: true,
     })
+
+    // Отправляем кнопки скачивания, если есть
+    if (keyboard) {
+      await ctx.reply("📥 Выберите трек для скачивания:", keyboard)
+    }
 
     // Отправляем новое сообщение с меню
     await ctx.reply("Выберите действие:", createMainMenu())
@@ -1249,6 +1472,19 @@ ${score >= 80 ? "✅ Высокая точность распознавания"
       await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, resultMessage, {
         parse_mode: "Markdown",
       })
+
+      // Создаем кнопку скачивания MP3
+      const downloadQuery = `${artists} - ${title}`
+      const downloadButton = Markup.inlineKeyboard([
+        [
+          Markup.button.callback(
+            `📥 Скачать MP3: ${title.substring(0, 20)}...`,
+            `download_${Buffer.from(downloadQuery).toString("base64").substring(0, 50)}`,
+          ),
+        ],
+      ])
+
+      await ctx.reply("📥 Хотите скачать этот трек?", downloadButton)
 
       // Отправляем новое сообщение с меню
       await ctx.reply("Выберите действие:", createMainMenu())
@@ -1730,7 +1966,7 @@ app.use(express.json())
 
 // Health check endpoint
 app.get("/", (req, res) => {
-  res.send("🤖 Multi-functional Telegram Bot with Music Recognition and Search is running!")
+  res.send("🤖 Multi-functional Telegram Bot with Music Recognition and MP3 Download is running!")
 })
 
 // Webhook endpoint
