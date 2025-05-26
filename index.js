@@ -226,7 +226,7 @@ async function downloadVideoWithSizeControl(url, outputPath, requestedQuality = 
 
   console.log(`Запрошенное качество: ${requestedQuality}p, оптимальное: ${quality}p`)
   console.log(`Длительность видео: ${videoInfo.duration} секунд`)
-  console.log(`Платформа: ${platform}`)
+  console.log(`Платфо��ма: ${platform}`)
 
   // Список качеств для попыток в зависимости от платформы
   let qualityFallback
@@ -937,7 +937,7 @@ bot.command("block", (ctx) => {
   }
 
   blockedUsers.add(targetId)
-  ctx.reply(`✅ Пользователь ${targetId} заблокирован`)
+  ctx.reply(`✅ Пользователь ${targetId} за��локирован`)
 })
 
 bot.command("unblock", (ctx) => {
@@ -1280,7 +1280,6 @@ async function handleVideoInfo(ctx, url) {
     if (videoInfo.duration) {
       const estimatedSize720p = (videoInfo.duration * 0.5).toFixed(1) // Примерно 0.5 МБ/мин для 720p
       const estimatedSize480p = (videoInfo.duration * 0.3).toFixed(1) // Примерно 0.3 МБ/мин для 480p
-      const estimatedAudioSize = (videoInfo.duration * 0.1).toFixed(1) //  // Примерно 0.3 МБ/мин для 480p
       const estimatedAudioSize = (videoInfo.duration * 0.1).toFixed(1) // Примерно 0.1 МБ/мин для MP3
       sizeEstimate =
         `\n📊 Примерный размер:\n` +
