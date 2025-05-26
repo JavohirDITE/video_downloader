@@ -15,11 +15,11 @@ RUN pip3 install --break-system-packages yt-dlp
 # Создаем рабочую директорию
 WORKDIR /app
 
-# Копируем package.json и package-lock.json
+# Копируем package.json
 COPY package*.json ./
 
-# Устанавливаем зависимости Node.js
-RUN npm ci --only=production
+# Устанавливаем зависимости Node.js (используем install вместо ci)
+RUN npm install --only=production
 
 # Копируем исходный код
 COPY . .
