@@ -653,7 +653,7 @@ bot.command("help", (ctx) => {
 • "✂️ Обрезать видео" - вырезать фрагмент (формат: 00:30-02:15)
 • "🔄 Конвертировать" - изменение формата (MP4, AVI, MKV, WebM)
 • "⚡ Изменить скорость" - ускорение/замедление (0.5x - 2x)
-• "📝 Извлечь субтитры" - получить текст субтитров
+• "�� Извлечь субтитры" - получить текст субтитров
 
 📊 СТАТИСТИКА:
 • Общая статистика бота
@@ -1059,7 +1059,7 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
       throw new Error(result.error || "Не удалось скачать видео")
     }
 
-    const { actualPath, sizeMB, quality: actualQuality, platform } = result
+    const { actualPath, sizeMB, quality: actualQuality, platform: resultPlatform } = result
 
     const cleanTitle = videoInfo.title
       .replace(/[^\w\s-]/g, "")
@@ -1080,7 +1080,7 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
     const audioStats = fs.statSync(audioPath)
     const audioSizeMB = audioStats.size / (1024 * 1024)
 
-    const caption = `✅ Видео + аудио готовы!\n\n📹 ${videoInfo.title}\n👤 ${videoInfo.uploader}\n🌐 Платформа: ${platform.toUpperCase()}\n📊 Качество: ${actualQuality}p\n💾 Размер видео: ${sizeMB.toFixed(2)} МБ\n🎵 Размер аудио: ${audioSizeMB.toFixed(2)} МБ`
+    const caption = `✅ Видео + аудио готовы!\n\n📹 ${videoInfo.title}\n👤 ${videoInfo.uploader}\n🌐 Платформа: ${resultPlatform.toUpperCase()}\n📊 Качество: ${actualQuality}p\n💾 Размер видео: ${sizeMB.toFixed(2)} МБ\n🎵 Размер аудио: ${audioSizeMB.toFixed(2)} МБ`
 
     if (sizeMB > MAX_VIDEO_SIZE_MB) {
       await ctx.replyWithDocument(
@@ -1111,7 +1111,7 @@ async function handleVideoAndAudioDownload(ctx, url, quality) {
       )
     }
 
-    updateStats(userId, platform, actualQuality, "download")
+    updateStats(userId, resultPlatform, actualQuality, "download")
     cleanupFiles(actualPath)
     cleanupFiles(audioPath)
     await ctx.deleteMessage(processingMessage.message_id)
