@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем yt-dlp
-RUN pip3 install --break-system-packages yt-dlp
+# Устанавливаем последнюю версию yt-dlp
+RUN pip3 install --break-system-packages --upgrade yt-dlp
 
 # Создаем рабочую директорию
 WORKDIR /app
@@ -18,7 +18,7 @@ WORKDIR /app
 # Копируем package.json
 COPY package*.json ./
 
-# Устанавливаем зависимости Node.js (используем install вместо ci)
+# Устанавливаем зависимости Node.js
 RUN npm install --only=production
 
 # Копируем исходный код
