@@ -53,19 +53,51 @@ function isValidUrl(string) {
   }
 }
 
-// Функция для скачивания видео с помощью yt-dlp
+// Улучшенная функция для скачивания видео с обходом блокировок YouTube
 async function downloadVideo(url, outputPath) {
-  const command = `yt-dlp -f "best[height<=720]" --no-playlist -o "${outputPath}" "${url}"`
-  console.log(`Выполняется команда: ${command}`)
+  // Расширенные параметры для обхода блокировок YouTube
+  const ytDlpOptions = [
+    "--no-playlist",
+    '--format "best[height<=720]/best"',
+    '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"',
+    '--referer "https://www.youtube.com/"',
+    '--add-header "Accept-Language:en-US,en;q=0.9"',
+    '--add-header "Accept-Encoding:gzip, deflate"',
+    '--add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"',
+    '--add-header "Connection:keep-alive"',
+    '--add-header "Upgrade-Insecure-Requests:1"',
+    "--extractor-retries 3",
+    "--fragment-retries 3",
+    "--retry-sleep 1",
+    "--no-check-certificate",
+    "--prefer-free-formats",
+    "--youtube-skip-dash-manifest",
+  ].join(" ")
+
+  const command = `yt-dlp ${ytDlpOptions} -o "${outputPath}" "${url}"`
+  console.log(`Выполняется команда: yt-dlp с расширенными параметрами`)
 
   try {
-    const { stdout, stderr } = await execPromise(command)
+    const { stdout, stderr } = await execPromise(command, { timeout: 300000 }) // 5 минут таймаут
     console.log("yt-dlp stdout:", stdout)
     if (stderr) console.log("yt-dlp stderr:", stderr)
     return true
   } catch (error) {
     console.error("Ошибка yt-dlp:", error)
-    throw error
+
+    // Если первая попытка не удалась, пробуем альтернативный метод
+    console.log("Пробуем альтернативный метод скачивания...")
+
+    const fallbackCommand = `yt-dlp --no-playlist --format "worst[height<=480]/worst" --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)" -o "${outputPath}" "${url}"`
+
+    try {
+      const { stdout, stderr } = await execPromise(fallbackCommand, { timeout: 300000 })
+      console.log("Альтернативный метод успешен:", stdout)
+      return true
+    } catch (fallbackError) {
+      console.error("Альтернативный метод также не сработал:", fallbackError)
+      throw error
+    }
   }
 }
 
@@ -75,7 +107,7 @@ async function extractAudio(videoPath, audioPath) {
   console.log(`Выполняется команда: ${command}`)
 
   try {
-    const { stdout, stderr } = await execPromise(command)
+    const { stdout, stderr } = await execPromise(command, { timeout: 180000 }) // 3 минуты таймаут
     console.log("ffmpeg stdout:", stdout)
     if (stderr) console.log("ffmpeg stderr:", stderr)
     return true
@@ -107,6 +139,8 @@ bot.start((ctx) => {
 /music https://www.youtube.com/watch?v=dQw4w9WgXcQ
 
 ⚡ Бот полностью бесплатный и без ограничений!
+
+⚠️ Примечание: Из-за ограничений YouTube некоторые видео могут быть недоступны для скачивания.
     `
 
   ctx.reply(welcomeMessage)
@@ -131,13 +165,15 @@ bot.help((ctx) => {
 
 ⚠️ Примечания:
 • Максимальный размер файла: 50 МБ (ограничение Telegram)
-• Время обработки: 1-3 минуты в зависимости от размера
+• Время обработки: 1-5 минут в зависимости от размера
+• YouTube может блокировать некоторые видео
 • Бот работает 24/7 и полностью бесплатен
 
 🔧 Если возникли проблемы, попробуйте:
 1. Проверить правильность ссылки
 2. Убедиться, что видео доступно публично
 3. Попробовать другую ссылку
+4. Использовать /music вместо /video для проблемных видео
     `
 
   ctx.reply(helpMessage)
@@ -159,7 +195,13 @@ bot.command("video", async (ctx) => {
     return ctx.reply("❌ Неверный формат ссылки. Пожалуйста, укажите корректную ссылку.")
   }
 
-  const processingMessage = await ctx.reply("⏳ Обрабатываю запрос... Это может занять несколько минут.")
+  let processingMessage
+  try {
+    processingMessage = await ctx.reply("⏳ Обрабатываю запрос... Это может занять до 5 минут.")
+  } catch (error) {
+    console.error("Ошибка при отправке сообщения:", error)
+    return
+  }
 
   try {
     // Генерируем уникальное имя файла
@@ -188,12 +230,22 @@ bot.command("video", async (ctx) => {
     // Проверяем размер файла (ограничение Telegram - 50 МБ)
     if (fileSizeMB > 50) {
       cleanupFiles(actualVideoPath)
-      return ctx.editMessageText(
-        "❌ Файл слишком большой (более 50 МБ). Попробуйте видео покороче или используйте команду /music для извлечения только аудио.",
-      )
+      try {
+        return await ctx.editMessageText(
+          "❌ Файл слишком большой (более 50 МБ). Попробуйте видео покороче или используйте команду /music для извлечения только аудио.",
+        )
+      } catch (editError) {
+        return ctx.reply(
+          "❌ Файл слишком большой (более 50 МБ). Попробуйте видео покороче или используйте команду /music.",
+        )
+      }
     }
 
-    await ctx.editMessageText("📤 Отправляю видео...")
+    try {
+      await ctx.editMessageText("📤 Отправляю видео...")
+    } catch (editError) {
+      console.log("Не удалось отредактировать сообщение, отправляем новое")
+    }
 
     // Отправляем видео пользователю
     await ctx.replyWithVideo(
@@ -206,22 +258,33 @@ bot.command("video", async (ctx) => {
     // Удаляем временный файл
     cleanupFiles(actualVideoPath)
 
-    // Удаляем сообщение о процессе
-    await ctx.deleteMessage(processingMessage.message_id)
+    // Пытаемся удалить сообщение о процессе
+    try {
+      await ctx.deleteMessage(processingMessage.message_id)
+    } catch (deleteError) {
+      console.log("Не удалось удалить сообщение о процессе")
+    }
   } catch (error) {
     console.error("Ошибка при обработке видео:", error)
 
     let errorMessage = "❌ Произошла ошибка при скачивании видео."
 
-    if (error.message.includes("Video unavailable")) {
+    if (error.message.includes("403") || error.message.includes("Forbidden")) {
+      errorMessage =
+        "❌ YouTube заблокировал скачивание этого видео. Попробуйте другое видео или используйте /music для извлечения аудио."
+    } else if (error.message.includes("Video unavailable")) {
       errorMessage = "❌ Видео недоступно. Возможно, оно приватное или удалено."
     } else if (error.message.includes("Unsupported URL")) {
       errorMessage = "❌ Данный сайт не поддерживается. Попробуйте другую ссылку."
-    } else if (error.message.includes("network")) {
-      errorMessage = "❌ Проблемы с сетью. Попробуйте позже."
+    } else if (error.message.includes("network") || error.message.includes("timeout")) {
+      errorMessage = "❌ Проблемы с сетью или таймаут. Попробуйте позже."
     }
 
-    await ctx.editMessageText(errorMessage)
+    try {
+      await ctx.editMessageText(errorMessage)
+    } catch (editError) {
+      ctx.reply(errorMessage)
+    }
   }
 })
 
@@ -241,7 +304,13 @@ bot.command("music", async (ctx) => {
     return ctx.reply("❌ Неверный формат ссылки. Пожалуйста, укажите корректную ссылку.")
   }
 
-  const processingMessage = await ctx.reply("⏳ Скачиваю видео и извлекаю аудио... Это может занять несколько минут.")
+  let processingMessage
+  try {
+    processingMessage = await ctx.reply("⏳ Скачиваю видео и извлекаю аудио... Это может занять до 5 минут.")
+  } catch (error) {
+    console.error("Ошибка при отправке сообщения:", error)
+    return
+  }
 
   try {
     // Генерируем уникальные имена файлов
@@ -264,7 +333,11 @@ bot.command("music", async (ctx) => {
 
     const actualVideoPath = path.join(tempDir, files[0])
 
-    await ctx.editMessageText("🎵 Извлекаю аудио...")
+    try {
+      await ctx.editMessageText("🎵 Извлекаю аудио...")
+    } catch (editError) {
+      console.log("Не удалось отредактировать сообщение")
+    }
 
     // Извлекаем аудио
     await extractAudio(actualVideoPath, audioPath)
@@ -278,10 +351,18 @@ bot.command("music", async (ctx) => {
     if (audioSizeMB > 50) {
       cleanupFiles(actualVideoPath)
       cleanupFiles(audioPath)
-      return ctx.editMessageText("❌ Аудио файл слишком большой (более 50 МБ). Попробуйте видео покороче.")
+      try {
+        return await ctx.editMessageText("❌ Аудио файл слишком большой (более 50 МБ). Попробуйте видео покороче.")
+      } catch (editError) {
+        return ctx.reply("❌ Аудио файл слишком большой (более 50 МБ). Попробуйте видео покороче.")
+      }
     }
 
-    await ctx.editMessageText("📤 Отправляю аудио...")
+    try {
+      await ctx.editMessageText("📤 Отправляю аудио...")
+    } catch (editError) {
+      console.log("Не удалось отредактировать сообщение")
+    }
 
     // Отправляем аудио пользователю
     await ctx.replyWithAudio(
@@ -297,22 +378,32 @@ bot.command("music", async (ctx) => {
     cleanupFiles(actualVideoPath)
     cleanupFiles(audioPath)
 
-    // Удаляем сообщение о процессе
-    await ctx.deleteMessage(processingMessage.message_id)
+    // Пытаемся удалить сообщение о процессе
+    try {
+      await ctx.deleteMessage(processingMessage.message_id)
+    } catch (deleteError) {
+      console.log("Не удалось удалить сообщение о процессе")
+    }
   } catch (error) {
     console.error("Ошибка при обработке аудио:", error)
 
     let errorMessage = "❌ Произошла ошибка при извлечении аудио."
 
-    if (error.message.includes("Video unavailable")) {
+    if (error.message.includes("403") || error.message.includes("Forbidden")) {
+      errorMessage = "❌ YouTube заблокировал скачивание этого видео. Попробуйте другое видео."
+    } else if (error.message.includes("Video unavailable")) {
       errorMessage = "❌ Видео недоступно. Возможно, оно приватное или удалено."
     } else if (error.message.includes("Unsupported URL")) {
       errorMessage = "❌ Данный сайт не поддерживается. Попробуйте другую ссылку."
-    } else if (error.message.includes("network")) {
-      errorMessage = "❌ Проблемы с сетью. Попробуйте позже."
+    } else if (error.message.includes("network") || error.message.includes("timeout")) {
+      errorMessage = "❌ Проблемы с сетью или таймаут. Попробуйте позже."
     }
 
-    await ctx.editMessageText(errorMessage)
+    try {
+      await ctx.editMessageText(errorMessage)
+    } catch (editError) {
+      ctx.reply(errorMessage)
+    }
   }
 })
 
@@ -344,7 +435,11 @@ bot.on("text", (ctx) => {
 bot.catch((err, ctx) => {
   console.error("Ошибка бота:", err)
   if (ctx) {
-    ctx.reply("❌ Произошла внутренняя ошибка. Попробуйте позже.")
+    try {
+      ctx.reply("❌ Произошла внутренняя ошибка. Попробуйте позже.")
+    } catch (replyError) {
+      console.error("Не удалось отправить сообщение об ошибке:", replyError)
+    }
   }
 })
 
@@ -372,8 +467,8 @@ setInterval(cleanupTempDir, 30 * 60 * 1000)
 app.use(express.json())
 
 // Health check endpoint
-app.get('/', (req, res) => {
-  res.send('🤖 Telegram Video Downloader Bot is running!')
+app.get("/", (req, res) => {
+  res.send("🤖 Telegram Video Downloader Bot is running!")
 })
 
 // Webhook endpoint
@@ -385,24 +480,23 @@ app.post(`/webhook/${BOT_TOKEN}`, (req, res) => {
 // Запуск сервера
 app.listen(PORT, async () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`)
-  
+
   try {
     // Устанавливаем webhook
-    const webhookUrl = process.env.RAILWAY_STATIC_URL 
+    const webhookUrl = process.env.RAILWAY_STATIC_URL
       ? `https://${process.env.RAILWAY_STATIC_URL}/webhook/${BOT_TOKEN}`
       : `http://localhost:${PORT}/webhook/${BOT_TOKEN}`
-    
+
     console.log(`🔗 Устанавливаем webhook: ${webhookUrl}`)
     await bot.telegram.setWebhook(webhookUrl)
     console.log("✅ Webhook установлен успешно!")
-    
+
     // Получаем информацию о боте
     const botInfo = await bot.telegram.getMe()
     console.log(`✅ Бот @${botInfo.username} успешно запущен!`)
-    
   } catch (error) {
     console.error("❌ Ошибка при установке webhook:", error)
-    
+
     // Если webhook не работает, используем polling
     console.log("🔄 Переключаемся на polling...")
     try {
