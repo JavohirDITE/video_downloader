@@ -945,7 +945,7 @@ YouTube, TikTok, Instagram, Twitter, Facebook, VK и 1000+ других!`,
     return
   }
 
-  // Обработка выбора качества
+  // Обработка выбора каче��тва
   if (text.includes("1080p")) {
     userSessions.set(userId, { ...session, quality: "1080" })
     ctx.reply("✅ Установлено качество: 1080p (будет понижено если файл большой)", createMainMenu())
@@ -1063,10 +1063,12 @@ async function handleMusicSearch(ctx, query, searchType) {
     const formattedResults = formatSearchResults(results, searchType)
 
     await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, formattedResults, {
-      reply_markup: createMainMenu().reply_markup,
       parse_mode: "Markdown",
       disable_web_page_preview: true,
     })
+
+    // Отправляем новое сообщение с меню
+    await ctx.reply("Выберите действие:", createMainMenu())
 
     // Сбрасываем сессию после поиска
     userSessions.delete(ctx.from.id)
@@ -1083,13 +1085,8 @@ async function handleMusicSearch(ctx, query, searchType) {
       errorMessage = "❌ Введите корректный поисковый запрос."
     }
 
-    try {
-      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage, {
-        reply_markup: createMainMenu().reply_markup,
-      })
-    } catch (editError) {
-      ctx.reply(errorMessage, createMainMenu())
-    }
+    await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage)
+    await ctx.reply("Выберите действие:", createMainMenu())
 
     // Сбрасываем сессию при ошибке
     userSessions.delete(ctx.from.id)
@@ -1111,22 +1108,19 @@ async function handlePopularTracks(ctx) {
     const formattedResults = formatSearchResults(results, "popular")
 
     await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, formattedResults, {
-      reply_markup: createMainMenu().reply_markup,
       parse_mode: "Markdown",
       disable_web_page_preview: true,
     })
+
+    // Отправляем новое сообщение с меню
+    await ctx.reply("Выберите действие:", createMainMenu())
   } catch (error) {
     console.error("Ошибка при получении популярных треков:", error)
 
     const errorMessage = "❌ Не удалось загрузить популярные треки. Попробуйте позже."
 
-    try {
-      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage, {
-        reply_markup: createMainMenu().reply_markup,
-      })
-    } catch (editError) {
-      ctx.reply(errorMessage, createMainMenu())
-    }
+    await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage)
+    await ctx.reply("Выберите действие:", createMainMenu())
   }
 }
 
@@ -1253,9 +1247,11 @@ async function handleMusicRecognition(ctx, type) {
 ${score >= 80 ? "✅ Высокая точность распознавания" : score >= 50 ? "⚠️ Средняя точность распознавания" : "❌ Низкая точность распознавания"}`
 
       await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, resultMessage, {
-        reply_markup: createMainMenu().reply_markup,
         parse_mode: "Markdown",
       })
+
+      // Отправляем новое сообщение с меню
+      await ctx.reply("Выберите действие:", createMainMenu())
 
       // Если есть внешние ссылки, добавляем их
       if (music.external_metadata) {
@@ -1298,9 +1294,8 @@ ${score >= 80 ? "✅ Высокая точность распознавания"
         "• Длительность: 10-60 секунд\n" +
         "• Попробуйте другой фрагмент трека"
 
-      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, userMessage, {
-        reply_markup: createMainMenu().reply_markup,
-      })
+      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, userMessage)
+      await ctx.reply("Выберите действие:", createMainMenu())
     }
 
     // Сбрасываем сессию после распознавания
@@ -1318,13 +1313,8 @@ ${score >= 80 ? "✅ Высокая точность распознавания"
       errorMessage = "❌ Проблема с сетью. Попробуйте позже."
     }
 
-    try {
-      await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage, {
-        reply_markup: createMainMenu().reply_markup,
-      })
-    } catch (editError) {
-      ctx.reply(errorMessage, createMainMenu())
-    }
+    await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, errorMessage)
+    await ctx.reply("Выберите действие:", createMainMenu())
 
     // Сбрасываем сессию при ошибке
     userSessions.delete(ctx.from.id)
@@ -1684,9 +1674,11 @@ ${availableQualities.length > 0 ? `📊 ${availableQualities[0]}` : ""}${sizeEst
 Выберите действие в меню ниже:`
 
     await ctx.telegram.editMessageText(ctx.chat.id, processingMessage.message_id, null, infoMessage, {
-      reply_markup: createMainMenu().reply_markup,
       parse_mode: "Markdown",
     })
+
+    // Отправляем новое сообщение с меню
+    await ctx.reply("Выберите действие:", createMainMenu())
   } catch (error) {
     console.error("Ошибка при получении информации:", error)
     ctx.reply("❌ Не удалось получить информацию о видео.", createMainMenu())
