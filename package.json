@@ -1,7 +1,7 @@
 {
   "name": "telegram-video-downloader-bot",
-  "version": "3.1.0",
-  "description": "Простой и быстрый Telegram бот для скачивания видео + аудио одновременно",
+  "version": "4.0.0",
+  "description": "Полнофункциональный Telegram бот для скачивания и обработки видео",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
