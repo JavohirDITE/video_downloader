@@ -1,4 +1,4 @@
-const { Telegraf } = require("telegraf")
+const { Telegraf, Markup } = require("telegraf")
 const { exec } = require("child_process")
 const fs = require("fs")
 const path = require("path")
@@ -31,6 +31,9 @@ if (!fs.existsSync(tempDir)) {
   fs.mkdirSync(tempDir, { recursive: true })
 }
 
+// Хранилище для пользовательских сессий
+const userSessions = new Map()
+
 // Функция для очистки временных файлов
 function cleanupFiles(filePath) {
   try {
@@ -53,12 +56,54 @@ function isValidUrl(string) {
   }
 }
 
-// Улучшенная функция для скачивания видео с обходом блокировок YouTube
-async function downloadVideo(url, outputPath) {
-  // Расширенные параметры для обхода блокировок YouTube
+// Функция для получения информации о видео
+async function getVideoInfo(url) {
+  const command = `yt-dlp --dump-json --no-playlist "${url}"`
+
+  try {
+    const { stdout } = await execPromise(command, { timeout: 30000 })
+    const info = JSON.parse(stdout)
+    return {
+      title: info.title || "Неизвестное видео",
+      duration: info.duration || 0,
+      uploader: info.uploader || "Неизвестный автор",
+      platform: info.extractor || "unknown",
+    }
+  } catch (error) {
+    console.error("Ошибка получения информации о видео:", error)
+    return {
+      title: "Неизвестное видео",
+      duration: 0,
+      uploader: "Неизвестный автор",
+      platform: "unknown",
+    }
+  }
+}
+
+// Функция для скачивания видео с выбранным качеством
+async function downloadVideo(url, outputPath, quality = "720") {
+  let formatSelector
+
+  switch (quality) {
+    case "1080":
+      formatSelector = "best[height<=1080]/best"
+      break
+    case "720":
+      formatSelector = "best[height<=720]/best"
+      break
+    case "480":
+      formatSelector = "best[height<=480]/best"
+      break
+    case "360":
+      formatSelector = "best[height<=360]/best"
+      break
+    default:
+      formatSelector = "best[height<=720]/best"
+  }
+
   const ytDlpOptions = [
     "--no-playlist",
-    '--format "best[height<=720]/best"',
+    `--format "${formatSelector}"`,
     '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"',
     '--referer "https://www.youtube.com/"',
     '--add-header "Accept-Language:en-US,en;q=0.9"',
@@ -75,19 +120,18 @@ async function downloadVideo(url, outputPath) {
   ].join(" ")
 
   const command = `yt-dlp ${ytDlpOptions} -o "${outputPath}" "${url}"`
-  console.log(`Выполняется команда: yt-dlp с расширенными параметрами`)
+  console.log(`Выполняется команда: yt-dlp с качеством ${quality}p`)
 
   try {
-    const { stdout, stderr } = await execPromise(command, { timeout: 300000 }) // 5 минут таймаут
+    const { stdout, stderr } = await execPromise(command, { timeout: 300000 })
     console.log("yt-dlp stdout:", stdout)
     if (stderr) console.log("yt-dlp stderr:", stderr)
     return true
   } catch (error) {
     console.error("Ошибка yt-dlp:", error)
 
-    // Если первая попытка не удалась, пробуем альтернативный метод
+    // Fallback для проблемных видео
     console.log("Пробуем альтернативный метод скачивания...")
-
     const fallbackCommand = `yt-dlp --no-playlist --format "worst[height<=480]/worst" --user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)" -o "${outputPath}" "${url}"`
 
     try {
@@ -101,13 +145,13 @@ async function downloadVideo(url, outputPath) {
   }
 }
 
-// Функция для извлечения аудио с помощью ffmpeg
-async function extractAudio(videoPath, audioPath) {
+// Функция для извлечения аудио с правильным названием
+async function extractAudio(videoPath, audioPath, videoInfo) {
   const command = `ffmpeg -i "${videoPath}" -vn -acodec mp3 -ab 192k "${audioPath}" -y`
   console.log(`Выполняется команда: ${command}`)
 
   try {
-    const { stdout, stderr } = await execPromise(command, { timeout: 180000 }) // 3 минуты таймаут
+    const { stdout, stderr } = await execPromise(command, { timeout: 180000 })
     console.log("ffmpeg stdout:", stdout)
     if (stderr) console.log("ffmpeg stderr:", stderr)
     return true
@@ -117,93 +161,184 @@ async function extractAudio(videoPath, audioPath) {
   }
 }
 
-// Команда /start - приветствие
+// Создание главного меню
+function createMainMenu() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("📥 Скачать видео", "download_video")],
+    [Markup.button.callback("🎵 Извлечь аудио", "extract_audio")],
+    [Markup.button.callback("ℹ️ Информация о видео", "video_info")],
+    [Markup.button.callback("❓ Помощь", "help")],
+  ])
+}
+
+// Создание меню выбора качества
+function createQualityMenu(action) {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🔥 1080p", `${action}_1080`), Markup.button.callback("⭐ 720p", `${action}_720`)],
+    [Markup.button.callback("📱 480p", `${action}_480`), Markup.button.callback("💾 360p", `${action}_360`)],
+    [Markup.button.callback("⬅️ Назад", "back_to_main")],
+  ])
+}
+
+// Команда /start - приветствие с кнопками
 bot.start((ctx) => {
   const welcomeMessage = `
-🎬 Добро пожаловать в бот для скачивания видео и аудио!
+🎬 Добро пожаловать в улучшенный бот для скачивания видео!
 
-📋 Доступные команды:
-/video <ссылка> - скачать видео
-/music <ссылка> - извлечь аудио в MP3
+🌟 Новые возможности:
+• Удобные кнопки для управления
+• Выбор качества видео (360p - 1080p)
+• Правильные названия файлов
+• Информация о видео перед скачиванием
 
 🌐 Поддерживаемые платформы:
-• YouTube
-• TikTok
-• Instagram
-• Twitter
-• Facebook
-• И многие другие!
+YouTube, TikTok, Instagram, Twitter, Facebook, VK и 1000+ других!
 
-💡 Пример использования:
-/video https://www.youtube.com/watch?v=dQw4w9WgXcQ
-/music https://www.youtube.com/watch?v=dQw4w9WgXcQ
+👇 Выберите действие или отправьте ссылку на видео:`
 
-⚡ Бот полностью бесплатный и без ограничений!
-
-⚠️ Примечание: Из-за ограничений YouTube некоторые видео могут быть недоступны для скачивания.
-    `
-
-  ctx.reply(welcomeMessage)
+  ctx.reply(welcomeMessage, createMainMenu())
 })
 
-// Команда /help - справка
-bot.help((ctx) => {
-  const helpMessage = `
-📖 Справка по использованию бота:
+// Обработка callback queries
+bot.on("callback_query", async (ctx) => {
+  const data = ctx.callbackQuery.data
+  const userId = ctx.from.id
 
-🎥 /video <ссылка> - Скачивает видео в качестве до 720p
-🎵 /music <ссылка> - Извлекает аудио в формате MP3 (192 kbps)
+  try {
+    if (data === "download_video") {
+      await ctx.editMessageText(
+        "📥 Выберите качество для скачивания видео:\n\n" +
+          "🔥 1080p - Лучшее качество (больше размер)\n" +
+          "⭐ 720p - Рекомендуемое качество\n" +
+          "📱 480p - Среднее качество\n" +
+          "💾 360p - Экономия трафика",
+        createQualityMenu("video"),
+      )
+    } else if (data === "extract_audio") {
+      await ctx.editMessageText(
+        "🎵 Отправьте ссылку на видео для извлечения аудио:\n\n" +
+          "Аудио будет сохранено в формате MP3 (192 kbps) с правильным названием.",
+        Markup.inlineKeyboard([[Markup.button.callback("⬅️ Назад", "back_to_main")]]),
+      )
+      userSessions.set(userId, { action: "extract_audio" })
+    } else if (data === "video_info") {
+      await ctx.editMessageText(
+        "ℹ️ Отправьте ссылку на видео для получения информации:\n\n" +
+          "Вы увидите название, автора, длительность и платформу.",
+        Markup.inlineKeyboard([[Markup.button.callback("⬅️ Назад", "back_to_main")]]),
+      )
+      userSessions.set(userId, { action: "video_info" })
+    } else if (data === "help") {
+      const helpMessage = `
+📖 Подробная справка:
 
-✅ Поддерживаемые сайты:
-• YouTube (youtube.com, youtu.be)
-• TikTok (tiktok.com)
-• Instagram (instagram.com)
-• Twitter (twitter.com, x.com)
-• Facebook (facebook.com)
-• VK (vk.com)
-• И более 1000 других сайтов!
+🎥 Скачивание видео:
+• Выберите "📥 Скачать видео"
+• Выберите качество (360p-1080p)
+• Отправьте ссылку на видео
 
-⚠️ Примечания:
-• Максимальный размер файла: 50 МБ (ограничение Telegram)
-• Время обработки: 1-5 минут в зависимости от размера
+🎵 Извлечение аудио:
+• Выберите "🎵 Извлечь аудио"
+• Отправьте ссылку на видео
+• Получите MP3 файл с правильным названием
+
+ℹ️ Информация о видео:
+• Узнайте детали перед скачиванием
+• Название, автор, длительность
+
+⚠️ Ограничения:
+• Максимальный размер: 50 МБ
+• Время обработки: 1-5 минут
 • YouTube может блокировать некоторые видео
-• Бот работает 24/7 и полностью бесплатен
 
-🔧 Если возникли проблемы, попробуйте:
-1. Проверить правильность ссылки
-2. Убедиться, что видео доступно публично
-3. Попробовать другую ссылку
-4. Использовать /music вместо /video для проблемных видео
-    `
+🌐 Поддерживаемые сайты:
+YouTube, TikTok, Instagram, Twitter, Facebook, VK и многие другие!`
 
-  ctx.reply(helpMessage)
+      await ctx.editMessageText(
+        helpMessage,
+        Markup.inlineKeyboard([[Markup.button.callback("⬅️ Назад", "back_to_main")]]),
+      )
+    } else if (data === "back_to_main") {
+      await ctx.editMessageText("👇 Выберите действие или отправьте ссылку на видео:", createMainMenu())
+      userSessions.delete(userId)
+    } else if (data.startsWith("video_")) {
+      const quality = data.split("_")[1]
+      await ctx.editMessageText(
+        `📥 Выбрано качество: ${quality}p\n\n` + "Теперь отправьте ссылку на видео для скачивания:",
+        Markup.inlineKeyboard([
+          [Markup.button.callback("🔄 Изменить качество", "download_video")],
+          [Markup.button.callback("⬅️ Назад", "back_to_main")],
+        ]),
+      )
+      userSessions.set(userId, { action: "download_video", quality })
+    }
+
+    await ctx.answerCbQuery()
+  } catch (error) {
+    console.error("Ошибка обработки callback:", error)
+    await ctx.answerCbQuery("Произошла ошибка")
+  }
 })
 
-// Обработка команды /video
-bot.command("video", async (ctx) => {
-  const args = ctx.message.text.split(" ")
+// Обработка текстовых сообщений
+bot.on("text", async (ctx) => {
+  const text = ctx.message.text
+  const userId = ctx.from.id
+  const session = userSessions.get(userId)
 
-  if (args.length < 2) {
+  // Если сообщение начинается с /, но это не известная команда
+  if (text.startsWith("/")) {
+    return ctx.reply("❌ Неизвестная команда. Используйте /start для начала работы.")
+  }
+
+  // Проверяем, является ли текст ссылкой
+  if (!isValidUrl(text)) {
     return ctx.reply(
-      "❌ Пожалуйста, укажите ссылку на видео.\n\nПример: /video https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "❌ Пожалуйста, отправьте корректную ссылку на видео.\n\n" + "Или используйте кнопки ниже:",
+      createMainMenu(),
     )
   }
 
-  const url = args[1]
-
-  if (!isValidUrl(url)) {
-    return ctx.reply("❌ Неверный формат ссылки. Пожалуйста, укажите корректную ссылку.")
+  // Обрабатываем ссылку в зависимости от сессии пользователя
+  if (session) {
+    if (session.action === "download_video") {
+      await handleVideoDownload(ctx, text, session.quality || "720")
+    } else if (session.action === "extract_audio") {
+      await handleAudioExtraction(ctx, text)
+    } else if (session.action === "video_info") {
+      await handleVideoInfo(ctx, text)
+    }
+    userSessions.delete(userId)
+  } else {
+    // Если нет активной сессии, показываем меню
+    await ctx.reply(
+      "💡 Я вижу ссылку на видео! Что вы хотите сделать?",
+      Markup.inlineKeyboard([
+        [Markup.button.callback("📥 Скачать видео", "download_video")],
+        [Markup.button.callback("🎵 Извлечь аудио", "extract_audio")],
+        [Markup.button.callback("ℹ️ Информация", "video_info")],
+      ]),
+    )
+    userSessions.set(userId, { url: text })
   }
+})
 
+// Функция обработки скачивания видео
+async function handleVideoDownload(ctx, url, quality) {
   let processingMessage
   try {
-    processingMessage = await ctx.reply("⏳ Обрабатываю запрос... Это может занять до 5 минут.")
+    processingMessage = await ctx.reply(
+      `⏳ Скачиваю видео в качестве ${quality}p...\n` + "Это может занять до 5 минут.",
+    )
   } catch (error) {
     console.error("Ошибка при отправке сообщения:", error)
     return
   }
 
   try {
+    // Получаем информацию о видео
+    const videoInfo = await getVideoInfo(url)
+
     // Генерируем уникальное имя файла
     const timestamp = Date.now()
     const videoFileName = `video_${timestamp}.%(ext)s`
@@ -212,9 +347,9 @@ bot.command("video", async (ctx) => {
     console.log(`Начинаем скачивание видео: ${url}`)
 
     // Скачиваем видео
-    await downloadVideo(url, videoPath)
+    await downloadVideo(url, videoPath, quality)
 
-    // Ищем скачанный файл (yt-dlp автоматически определяет расширение)
+    // Ищем скачанный файл
     const files = fs.readdirSync(tempDir).filter((file) => file.startsWith(`video_${timestamp}`))
 
     if (files.length === 0) {
@@ -227,16 +362,19 @@ bot.command("video", async (ctx) => {
 
     console.log(`Размер файла: ${fileSizeMB.toFixed(2)} МБ`)
 
-    // Проверяем размер файла (ограничение Telegram - 50 МБ)
+    // Проверяем размер файла
     if (fileSizeMB > 50) {
       cleanupFiles(actualVideoPath)
       try {
         return await ctx.editMessageText(
-          "❌ Файл слишком большой (более 50 МБ). Попробуйте видео покороче или используйте команду /music для извлечения только аудио.",
+          "❌ Файл слишком большой (более 50 МБ).\n" +
+            "Попробуйте выбрать меньшее качество или используйте извлечение аудио.",
+          createMainMenu(),
         )
       } catch (editError) {
         return ctx.reply(
-          "❌ Файл слишком большой (более 50 МБ). Попробуйте видео покороче или используйте команду /music.",
+          "❌ Файл слишком большой (более 50 МБ).\n" + "Попробуйте выбрать меньшее качество.",
+          createMainMenu(),
         )
       }
     }
@@ -244,21 +382,29 @@ bot.command("video", async (ctx) => {
     try {
       await ctx.editMessageText("📤 Отправляю видео...")
     } catch (editError) {
-      console.log("Не удалось отредактировать сообщение, отправляем новое")
+      console.log("Не удалось отредактировать сообщение")
     }
 
-    // Отправляем видео пользователю
+    // Отправляем видео с информацией
+    const caption =
+      `✅ Видео скачано!\n\n` +
+      `📹 ${videoInfo.title}\n` +
+      `👤 ${videoInfo.uploader}\n` +
+      `📊 Качество: ${quality}p\n` +
+      `💾 Размер: ${fileSizeMB.toFixed(2)} МБ`
+
     await ctx.replyWithVideo(
       { source: actualVideoPath },
       {
-        caption: "✅ Видео успешно скачано!",
+        caption,
+        reply_markup: createMainMenu().reply_markup,
       },
     )
 
     // Удаляем временный файл
     cleanupFiles(actualVideoPath)
 
-    // Пытаемся удалить сообщение о процессе
+    // Удаляем сообщение о процессе
     try {
       await ctx.deleteMessage(processingMessage.message_id)
     } catch (deleteError) {
@@ -270,59 +416,60 @@ bot.command("video", async (ctx) => {
     let errorMessage = "❌ Произошла ошибка при скачивании видео."
 
     if (error.message.includes("403") || error.message.includes("Forbidden")) {
-      errorMessage =
-        "❌ YouTube заблокировал скачивание этого видео. Попробуйте другое видео или используйте /music для извлечения аудио."
+      errorMessage = "❌ YouTube заблокировал скачивание этого видео.\nПопробуйте другое видео или извлеките аудио."
     } else if (error.message.includes("Video unavailable")) {
       errorMessage = "❌ Видео недоступно. Возможно, оно приватное или удалено."
     } else if (error.message.includes("Unsupported URL")) {
-      errorMessage = "❌ Данный сайт не поддерживается. Попробуйте другую ссылку."
-    } else if (error.message.includes("network") || error.message.includes("timeout")) {
-      errorMessage = "❌ Проблемы с сетью или таймаут. Попробуйте позже."
+      errorMessage = "❌ Данный сайт не поддерживается."
     }
 
     try {
-      await ctx.editMessageText(errorMessage)
+      await ctx.editMessageText(errorMessage, createMainMenu())
     } catch (editError) {
-      ctx.reply(errorMessage)
+      ctx.reply(errorMessage, createMainMenu())
     }
   }
-})
+}
 
-// Обработка команды /music
-bot.command("music", async (ctx) => {
-  const args = ctx.message.text.split(" ")
-
-  if (args.length < 2) {
-    return ctx.reply(
-      "❌ Пожалуйста, укажите ссылку на видео для извлечения аудио.\n\nПример: /music https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    )
-  }
-
-  const url = args[1]
-
-  if (!isValidUrl(url)) {
-    return ctx.reply("❌ Неверный формат ссылки. Пожалуйста, укажите корректную ссылку.")
-  }
-
+// Функция обработки извлечения аудио
+async function handleAudioExtraction(ctx, url) {
   let processingMessage
   try {
-    processingMessage = await ctx.reply("⏳ Скачиваю видео и извлекаю аудио... Это может занять до 5 минут.")
+    processingMessage = await ctx.reply("⏳ Извлекаю аудио... Это может занять до 5 минут.")
   } catch (error) {
     console.error("Ошибка при отправке сообщения:", error)
     return
   }
 
   try {
+    // Получаем информацию о видео
+    const videoInfo = await getVideoInfo(url)
+
     // Генерируем уникальные имена файлов
     const timestamp = Date.now()
     const videoFileName = `video_${timestamp}.%(ext)s`
     const videoPath = path.join(tempDir, videoFileName)
-    const audioPath = path.join(tempDir, `audio_${timestamp}.mp3`)
+
+    // Создаем правильное имя для аудио файла
+    let audioFileName
+    if (videoInfo.platform.toLowerCase().includes("youtube")) {
+      // Для YouTube используем название видео
+      const cleanTitle = videoInfo.title
+        .replace(/[^\w\s-]/g, "") // Убираем специальные символы
+        .replace(/\s+/g, "_") // Заменяем пробелы на подчеркивания
+        .substring(0, 50) // Ограничиваем длину
+      audioFileName = `${cleanTitle}.mp3`
+    } else {
+      // Для остальных платформ просто "audio"
+      audioFileName = `audio_${timestamp}.mp3`
+    }
+
+    const audioPath = path.join(tempDir, audioFileName)
 
     console.log(`Начинаем скачивание видео для аудио: ${url}`)
 
     // Скачиваем видео
-    await downloadVideo(url, videoPath)
+    await downloadVideo(url, videoPath, "360") // Для аудио используем низкое качество
 
     // Ищем скачанный файл
     const files = fs.readdirSync(tempDir).filter((file) => file.startsWith(`video_${timestamp}`))
@@ -340,7 +487,7 @@ bot.command("music", async (ctx) => {
     }
 
     // Извлекаем аудио
-    await extractAudio(actualVideoPath, audioPath)
+    await extractAudio(actualVideoPath, audioPath, videoInfo)
 
     const audioStats = fs.statSync(audioPath)
     const audioSizeMB = audioStats.size / (1024 * 1024)
@@ -352,9 +499,12 @@ bot.command("music", async (ctx) => {
       cleanupFiles(actualVideoPath)
       cleanupFiles(audioPath)
       try {
-        return await ctx.editMessageText("❌ Аудио файл слишком большой (более 50 МБ). Попробуйте видео покороче.")
+        return await ctx.editMessageText(
+          "❌ Аудио файл слишком большой (более 50 МБ).\nПопробуйте видео покороче.",
+          createMainMenu(),
+        )
       } catch (editError) {
-        return ctx.reply("❌ Аудио файл слишком большой (более 50 МБ). Попробуйте видео покороче.")
+        return ctx.reply("❌ Аудио файл слишком большой.", createMainMenu())
       }
     }
 
@@ -364,13 +514,20 @@ bot.command("music", async (ctx) => {
       console.log("Не удалось отредактировать сообщение")
     }
 
-    // Отправляем аудио пользователю
+    // Отправляем аудио с правильными метаданными
+    const caption =
+      `✅ Аудио извлечено!\n\n` +
+      `🎵 ${videoInfo.title}\n` +
+      `👤 ${videoInfo.uploader}\n` +
+      `💾 Размер: ${audioSizeMB.toFixed(2)} МБ`
+
     await ctx.replyWithAudio(
       { source: audioPath },
       {
-        caption: "✅ Аудио успешно извлечено!",
-        title: `Audio_${timestamp}`,
-        performer: "Video Downloader Bot",
+        caption,
+        title: videoInfo.title,
+        performer: videoInfo.uploader,
+        reply_markup: createMainMenu().reply_markup,
       },
     )
 
@@ -378,7 +535,7 @@ bot.command("music", async (ctx) => {
     cleanupFiles(actualVideoPath)
     cleanupFiles(audioPath)
 
-    // Пытаемся удалить сообщение о процессе
+    // Удаляем сообщение о процессе
     try {
       await ctx.deleteMessage(processingMessage.message_id)
     } catch (deleteError) {
@@ -390,53 +547,70 @@ bot.command("music", async (ctx) => {
     let errorMessage = "❌ Произошла ошибка при извлечении аудио."
 
     if (error.message.includes("403") || error.message.includes("Forbidden")) {
-      errorMessage = "❌ YouTube заблокировал скачивание этого видео. Попробуйте другое видео."
+      errorMessage = "❌ YouTube заблокировал скачивание этого видео."
     } else if (error.message.includes("Video unavailable")) {
-      errorMessage = "❌ Видео недоступно. Возможно, оно приватное или удалено."
-    } else if (error.message.includes("Unsupported URL")) {
-      errorMessage = "❌ Данный сайт не поддерживается. Попробуйте другую ссылку."
-    } else if (error.message.includes("network") || error.message.includes("timeout")) {
-      errorMessage = "❌ Проблемы с сетью или таймаут. Попробуйте позже."
+      errorMessage = "❌ Видео недоступно."
     }
 
     try {
-      await ctx.editMessageText(errorMessage)
+      await ctx.editMessageText(errorMessage, createMainMenu())
     } catch (editError) {
-      ctx.reply(errorMessage)
+      ctx.reply(errorMessage, createMainMenu())
     }
   }
-})
+}
 
-// Обработка неизвестных команд
-bot.on("text", (ctx) => {
-  const text = ctx.message.text
-
-  // Если сообщение начинается с /, но это не известная команда
-  if (text.startsWith("/")) {
-    return ctx.reply("❌ Неизвестная команда. Используйте /help для просмотра доступных команд.")
+// Функция получения информации о видео
+async function handleVideoInfo(ctx, url) {
+  let processingMessage
+  try {
+    processingMessage = await ctx.reply("⏳ Получаю информацию о видео...")
+  } catch (error) {
+    console.error("Ошибка при отправке сообщения:", error)
+    return
   }
 
-  // Если пользователь отправил просто ссылку
-  if (isValidUrl(text)) {
-    return ctx.reply(
-      "💡 Я вижу, что вы отправили ссылку! Используйте команды:\n\n/video " +
-        text +
-        " - для скачивания видео\n/music " +
-        text +
-        " - для извлечения аудио",
+  try {
+    const videoInfo = await getVideoInfo(url)
+
+    const duration = videoInfo.duration
+      ? `${Math.floor(videoInfo.duration / 60)}:${(videoInfo.duration % 60).toString().padStart(2, "0")}`
+      : "Неизвестно"
+
+    const infoMessage = `
+ℹ️ Информация о видео:
+
+📹 **Название:** ${videoInfo.title}
+👤 **Автор:** ${videoInfo.uploader}
+⏱ **Длительность:** ${duration}
+🌐 **Платформа:** ${videoInfo.platform}
+
+Что вы хотите сделать с этим видео?`
+
+    await ctx.editMessageText(
+      infoMessage,
+      Markup.inlineKeyboard([
+        [Markup.button.callback("📥 Скачать видео", "download_video")],
+        [Markup.button.callback("🎵 Извлечь аудио", "extract_audio")],
+        [Markup.button.callback("⬅️ Назад", "back_to_main")],
+      ]),
     )
+  } catch (error) {
+    console.error("Ошибка при получении информации:", error)
+    try {
+      await ctx.editMessageText("❌ Не удалось получить информацию о видео.", createMainMenu())
+    } catch (editError) {
+      ctx.reply("❌ Не удалось получить информацию о видео.", createMainMenu())
+    }
   }
-
-  // Для любого другого текста
-  ctx.reply("❓ Я не понимаю это сообщение. Используйте /help для просмотра доступных команд.")
-})
+}
 
 // Обработка ошибок
 bot.catch((err, ctx) => {
   console.error("Ошибка бота:", err)
   if (ctx) {
     try {
-      ctx.reply("❌ Произошла внутренняя ошибка. Попробуйте позже.")
+      ctx.reply("❌ Произошла внутренняя ошибка. Попробуйте позже.", createMainMenu())
     } catch (replyError) {
       console.error("Не удалось отправить сообщение об ошибке:", replyError)
     }
@@ -463,12 +637,20 @@ cleanupTempDir()
 // Периодическая очистка временных файлов (каждые 30 минут)
 setInterval(cleanupTempDir, 30 * 60 * 1000)
 
+// Очистка старых сессий (каждые 10 минут)
+setInterval(
+  () => {
+    console.log(`Активных сессий: ${userSessions.size}`)
+  },
+  10 * 60 * 1000,
+)
+
 // Настройка webhook для Railway
 app.use(express.json())
 
 // Health check endpoint
 app.get("/", (req, res) => {
-  res.send("🤖 Telegram Video Downloader Bot is running!")
+  res.send("🤖 Improved Telegram Video Downloader Bot is running!")
 })
 
 // Webhook endpoint
@@ -493,7 +675,7 @@ app.listen(PORT, async () => {
 
     // Получаем информацию о боте
     const botInfo = await bot.telegram.getMe()
-    console.log(`✅ Бот @${botInfo.username} успешно запущен!`)
+    console.log(`✅ Улучшенный бот @${botInfo.username} успешно запущен!`)
   } catch (error) {
     console.error("❌ Ошибка при установке webhook:", error)
 
